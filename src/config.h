@@ -16,6 +16,7 @@ extern const char *shape_names[SHAPE_COUNT];
 
 struct config {
     char image[PATH_LEN];
+    int enabled;
     enum renderer renderer;
     int fps;
     float render_scale;
@@ -60,6 +61,9 @@ int config_set(struct config *c, const char *key, const char *value, const char 
 int config_load(struct config *c, const char *path, const char *preset_override);
 void config_print(const struct config *c, FILE *f);
 void config_list_presets(FILE *f);
+int config_preset_count(void);
+const char *config_preset_name(int index);
+const char *config_preset_description(int index);
 const char *config_default_path(void);
 
 // fps and render_scale of 0 mean "auto": full quality on a GPU, reduced on the CPU renderer.

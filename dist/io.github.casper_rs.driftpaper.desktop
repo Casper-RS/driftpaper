@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=driftpaper
+GenericName=Animated Wallpaper
+Comment=Choose an image and animate particles around it
+Exec=driftpaper-settings
+Icon=io.github.casper_rs.driftpaper
+Terminal=false
+Categories=Settings;DesktopSettings;GTK;
+Keywords=wallpaper;background;animated;particles;
+StartupNotify=true

@@ -32,12 +32,12 @@ jobs:
 
   binary:
     needs: check
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libegl-dev libgles-dev
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libegl-dev libgles-dev libgtk-4-dev libadwaita-1-dev
 
       - name: Build
         run: make
@@ -46,9 +46,9 @@ jobs:
         run: |
           name="driftpaper-${{ needs.check.outputs.version }}-linux-x86_64"
           mkdir -p "$name/dist"
-          cp driftpaper LICENSE README.md CHANGELOG.md "$name/"
+          cp driftpaper driftpaper-settings LICENSE README.md CHANGELOG.md "$name/"
           cp -r examples "$name/"
-          cp dist/driftpaper.desktop dist/driftpaper.service.in "$name/dist/"
+          cp dist/* "$name/dist/"
           tar czf "$name.tar.gz" "$name"
 
       - uses: actions/upload-artifact@v4
@@ -60,7 +60,7 @@ jobs:
     needs: check
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
     steps:
       - uses: actions/checkout@v4

@@ -11,6 +11,7 @@
 #include <wayland-egl.h>
 #include "egl.h"
 #include "render.h"
+#include "runtime.h"
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
@@ -137,6 +138,11 @@ static void reload_if_changed(struct wallpaper *wp) {
     if ((image_changed || image_modified) && render_load_image(&wp->scene, next.image, next.ellipse)) {
         fprintf(stderr, "driftpaper: keeping the previous image\n");
         snprintf(next.image, sizeof next.image, "%s", wp->cfg.image);
+    }
+    if (!next.enabled) {
+        fprintf(stderr, "driftpaper: wallpaper disabled in the settings, exiting\n");
+        stop_requested = 1;
+        return;
     }
     if (next.renderer != wp->cfg.renderer) fprintf(stderr, "driftpaper: restart driftpaper to switch the renderer\n");
     wp->cfg = next;
@@ -307,21 +313,9 @@ static const struct wl_registry_listener registry_listener = {
     .global_remove = registry_global_remove,
 };
 
-// Sandboxes such as Flatpak may hide WAYLAND_DISPLAY while still exposing the compositor's socket.
-static struct wl_display *connect_display(void) {
-    const char *name = getenv("WAYLAND_DISPLAY");
-    if (name && *name) return wl_display_connect(NULL);
-    for (int i = 0; i < 4; i++) {
-        char socket_name[16];
-        snprintf(socket_name, sizeof socket_name, "wayland-%d", i);
-        struct wl_display *display = wl_display_connect(socket_name);
-        if (display) return display;
-    }
-    return NULL;
-}
-
 static int connect_wayland(struct wallpaper *wp) {
-    wp->display = connect_display();
+    runtime_find_wayland_display();
+    wp->display = wl_display_connect(NULL);
     if (!wp->display) {
         fprintf(stderr, "driftpaper: cannot connect to a Wayland display\n");
         return -1;
@@ -369,6 +363,16 @@ static void shutdown_wallpaper(struct wallpaper *wp) {
 }
 
 int wallpaper_run(const struct settings_source *src, const struct config *initial) {
+    if (!initial->enabled) {
+        fprintf(stderr, "driftpaper: wallpaper is disabled (enabled = false), not starting\n");
+        return 0;
+    }
+    int lock = runtime_acquire_lock();
+    if (lock == -1) {
+        fprintf(stderr, "driftpaper: already running\n");
+        return 0;
+    }
+
     static struct wallpaper wp;
     wp.src = src;
     wp.cfg = *initial;

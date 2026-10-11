@@ -5,6 +5,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-11
+
+### Added
+- Settings window (`driftpaper-settings`): pick an image with a file browser, preview it, choose
+  a preset and edit every setting while the wallpaper updates live.
+- Turn the wallpaper on or off and start it on login from the settings window.
+- Export a matching lock screen image from the settings window.
+- `enabled` setting: a running wallpaper exits when it is switched off.
+- App icon, launcher entry and AppStream metadata.
+
+### Changed
+- Only one wallpaper runs at a time; starting a second one exits right away.
+- The Flatpak is built on the GNOME 50 runtime and opens the settings window.
+- The release binary is built on Ubuntu 24.04 and includes the settings window.
+
 ## [0.1.0] - 2026-10-11
 
 ### Added
@@ -22,5 +37,6 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Monitor hotplug support and a per-monitor `outputs` filter.
 - Flatpak bundle and Linux binary on every GitHub release.
 
-[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Casper-RS/driftpaper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Casper-RS/driftpaper/releases/tag/v0.1.0

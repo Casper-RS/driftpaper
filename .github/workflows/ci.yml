@@ -12,13 +12,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libegl-dev libgles-dev
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libegl-dev libgles-dev libgtk-4-dev libadwaita-1-dev
 
       - name: Build
         run: make CFLAGS="-O2 -Werror"
 
       - name: Smoke test
         run: |
+          test -x driftpaper-settings
           ./driftpaper --version
           ./driftpaper --list
           ./driftpaper -c examples/config.ini --print-config

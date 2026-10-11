@@ -31,6 +31,7 @@ static const struct { const char *name, *desc, *body; } presets[] = {
 
 void config_defaults(struct config *c) {
     memset(c, 0, sizeof *c);
+    c->enabled = 1;
     c->renderer = RENDERER_AUTO;
     c->count = 180;
     c->motion = MOTION_ORBIT;
@@ -113,6 +114,12 @@ int config_set(struct config *c, const char *key, const char *value, const char 
     if (!strcmp(key, "image")) {
         if (v[0] == '~' && v[1] == '/') snprintf(c->image, sizeof c->image, "%s%s", getenv("HOME") ? getenv("HOME") : "", v + 1);
         else snprintf(c->image, sizeof c->image, "%s", v);
+        return 0;
+    }
+    if (!strcmp(key, "enabled")) {
+        if (!strcasecmp(v, "true") || !strcmp(v, "1") || !strcasecmp(v, "yes")) c->enabled = 1;
+        else if (!strcasecmp(v, "false") || !strcmp(v, "0") || !strcasecmp(v, "no")) c->enabled = 0;
+        else return bad(where, key, v, "true or false");
         return 0;
     }
     if (!strcmp(key, "renderer")) {
@@ -316,6 +323,7 @@ static void print_color(FILE *f, const float *rgb) {
 
 void config_print(const struct config *c, FILE *f) {
     fprintf(f, "[general]\n");
+    fprintf(f, "enabled = %s\n", c->enabled ? "true" : "false");
     fprintf(f, "image = %s\n", c->image);
     fprintf(f, "renderer = %s\n", renderer_names[c->renderer]);
     if (c->fps) fprintf(f, "fps = %d\n", c->fps); else fprintf(f, "fps = auto\n");
@@ -359,6 +367,10 @@ void config_list_presets(FILE *f) {
     for (int i = 0; i < SHAPE_COUNT; i++) fprintf(f, " %s", shape_names[i]);
     fprintf(f, "\n\nMotions:\n  orbit rise fall drift\n");
 }
+
+int config_preset_count(void) { return N_PRESETS; }
+const char *config_preset_name(int index) { return presets[index].name; }
+const char *config_preset_description(int index) { return presets[index].desc; }
 
 const char *config_default_path(void) {
     static char path[PATH_LEN];

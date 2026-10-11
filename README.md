@@ -8,6 +8,8 @@ breathing glow around it. It uses well under 1% of one CPU core on a GPU.
 
 ## Features
 
+- **Settings window.** Pick an image with a file browser, choose a preset and tweak everything
+  while the wallpaper updates live. Turn the wallpaper on or off and start it on login from there.
 - **Works with any image.** The subject's position and size are detected automatically, and the
   particles keep a clear space around it. Images without a clear subject get particles everywhere.
 - **Colours from the image.** The particle palette and glow are taken from the picture itself.
@@ -18,6 +20,8 @@ breathing glow around it. It uses well under 1% of one CPU core on a GPU.
 - **GPU or CPU rendering**, with lower resolution and frame rate on the CPU to keep it usable.
 - **Lock screen snapshots:** export a still PNG of the current look.
 - **Multi-monitor** support with hotplugging and a per-monitor filter.
+
+<img src="docs/settings-window.png" width="420" alt="driftpaper settings window">
 
 | shards | stardust | embers |
 |---|---|---|
@@ -38,10 +42,11 @@ Download `driftpaper-<version>.flatpak` from the [latest release](https://github
 
 ```sh
 flatpak install --user driftpaper-*.flatpak
-flatpak run io.github.casper_rs.driftpaper ~/Pictures/my-wallpaper.png
 ```
 
-The Flatpak reads its config from `~/.var/app/io.github.casper_rs.driftpaper/config/driftpaper/config.ini`.
+Open **driftpaper** from your app menu, click **Browse…** to pick a picture and switch on
+**Animated wallpaper**. The Flatpak keeps its settings in
+`~/.var/app/io.github.casper_rs.driftpaper/config/driftpaper/config.ini`.
 
 > **Why the Flatpak talks to the compositor directly:** wallpapers use the privileged
 > `wlr-layer-shell` protocol, which compositors hide from Flatpak's filtered Wayland socket.
@@ -50,24 +55,36 @@ The Flatpak reads its config from `~/.var/app/io.github.casper_rs.driftpaper/con
 
 ### Binary (from Releases)
 
-Download `driftpaper-<version>-linux-x86_64.tar.gz`, extract it and copy `driftpaper` into
-your `PATH`, for example `~/.local/bin`.
+Built on Ubuntu 24.04; the settings window needs GTK 4.14 and libadwaita 1.5 or newer.
+
+```sh
+tar xf driftpaper-*-linux-x86_64.tar.gz && cd driftpaper-*-linux-x86_64
+install -Dm755 driftpaper driftpaper-settings -t ~/.local/bin
+install -Dm644 dist/io.github.casper_rs.driftpaper.desktop -t ~/.local/share/applications
+install -Dm644 dist/io.github.casper_rs.driftpaper.svg -t ~/.local/share/icons/hicolor/scalable/apps
+```
 
 ### From source
 
 ```sh
 # Debian/Ubuntu/Pop!_OS
-sudo apt install build-essential libwayland-dev libegl-dev libgles-dev
+sudo apt install build-essential libwayland-dev libegl-dev libgles-dev libgtk-4-dev libadwaita-1-dev
 # Fedora
-sudo dnf install gcc make wayland-devel mesa-libEGL-devel mesa-libGLES-devel
+sudo dnf install gcc make wayland-devel mesa-libEGL-devel mesa-libGLES-devel gtk4-devel libadwaita-devel
 # Arch
-sudo pacman -S base-devel wayland mesa libglvnd
+sudo pacman -S base-devel wayland mesa libglvnd gtk4 libadwaita
 
 make
 sudo make install            # or: make install PREFIX=~/.local
 ```
 
+Without the GTK 4 and libadwaita development files, `make` builds only the wallpaper and the
+command line works as before.
+
 ## Usage
+
+The easiest way is the settings window: run `driftpaper-settings` or open **driftpaper** from
+your app menu. Everything below is also available from the command line:
 
 ```sh
 driftpaper ~/Pictures/wall.png                # run with an image
@@ -80,7 +97,7 @@ driftpaper --print-config > ~/.config/driftpaper/config.ini   # write a config t
 
 ### Start on login
 
-Pick one:
+Switch on **Start on login** in the settings window, or pick one of these:
 
 ```sh
 # systemd user service (installed by make install)
@@ -94,7 +111,7 @@ For the Flatpak, use `Exec=flatpak run io.github.casper_rs.driftpaper` in the au
 
 ### Matching lock screen
 
-Most lock screens show a still image. Export one that matches your animated wallpaper:
+Most lock screens show a still image. Use **Export…** in the settings window, or:
 
 ```sh
 driftpaper --snapshot ~/Pictures/driftpaper-lock.png --size 2560x1440
@@ -107,6 +124,7 @@ lists every setting with an explanation. The most useful ones:
 
 | Setting | Values | Meaning |
 |---|---|---|
+| `enabled` | `true`, `false` | Whether the wallpaper runs; turning it off stops a running one |
 | `image` | path | The picture to animate |
 | `preset` | `shards`, `stardust`, `geometric`, `embers`, `snow`, `fireflies`, `confetti` | Starting point, other keys override it |
 | `renderer` | `auto`, `gpu`, `cpu` | `gpu` prefers the dedicated GPU, `cpu` uses software rendering |
@@ -146,7 +164,14 @@ src/render.c      OpenGL ES 2 shaders and particle generation
 src/wallpaper.c   Wayland outputs, frame loop and live reload
 src/snapshot.c    offscreen rendering to PNG
 src/egl.c         EGL setup and renderer selection
+src/runtime.c     single-instance lock and Wayland socket discovery
+gui/settings.c    settings window (GTK 4 + libadwaita)
+gui/bindings.c    rows that edit config fields in place
 ```
+
+The wallpaper and the settings window are separate programs in the same package, so the
+always-running wallpaper never loads GTK. They share the config parser and image analysis, and
+talk only through the config file, which the wallpaper reloads live.
 
 Releases are built by GitHub Actions when a `v*` tag is pushed. Bump `VERSION` in the
 `Makefile`, add a section to `CHANGELOG.md`, then tag:
