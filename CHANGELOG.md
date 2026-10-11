@@ -19,6 +19,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Pictures are loaded and analysed once and shared, so changing settings no longer reloads them.
+- Saving settings without changes no longer rebuilds the wallpaper.
+- Settings window: shows a Start button when the wallpaper is on but not running, retries when it
+  is switched back on while still shutting down, asks for a picture before switching on, and keeps
+  at least one monitor visible.
 
 ## [0.2.1] - 2026-10-11
 

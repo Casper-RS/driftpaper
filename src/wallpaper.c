@@ -44,10 +44,14 @@ struct output {
 
 // All scenes built from one version of the settings: one per distinct picture, plus which scene
 // each monitor shows, so a crossfade can find a monitor's old scene even after its picture changed.
+// Looks are copied by value when a crossfade starts, so they refer to scenes by index, not pointer.
+#define SCENE_UNRESOLVED 0
+#define SCENE_FAILED -1
+
 struct look {
     struct scene scenes[MAX_IMAGES];
     int n;
-    struct scene *by_output[MAX_OUTPUTS];
+    int by_output[MAX_OUTPUTS];  // scene index + 1, or SCENE_UNRESOLVED / SCENE_FAILED
     char failed[MAX_IMAGES][PATH_LEN];
     int n_failed;
 };
@@ -104,21 +108,26 @@ static const char *image_for(const struct wallpaper *wp, const struct output *o)
     return wp->cfg.span ? wp->cfg.image : config_image_for(&wp->cfg, o->name);
 }
 
-static struct scene *scene_with_image(struct wallpaper *wp, struct look *look, const char *image) {
+static int scene_with_image(struct wallpaper *wp, struct look *look, const char *image) {
     for (int i = 0; i < look->n; i++)
-        if (!strcmp(look->scenes[i].image->path, image)) return &look->scenes[i];
+        if (!strcmp(look->scenes[i].image->path, image)) return i + 1;
     for (int i = 0; i < look->n_failed; i++)
-        if (!strcmp(look->failed[i], image)) return NULL;
+        if (!strcmp(look->failed[i], image)) return SCENE_FAILED;
     if (look->n < MAX_IMAGES && !scene_create(&wp->renderer, &look->scenes[look->n], image, &wp->cfg))
-        return &look->scenes[look->n++];
+        return ++look->n;
     if (look->n_failed < MAX_IMAGES) snprintf(look->failed[look->n_failed++], PATH_LEN, "%s", image);
-    return NULL;
+    return SCENE_FAILED;
+}
+
+static struct scene *look_scene_for(struct look *look, const struct wallpaper *wp, const struct output *o) {
+    int slot = look->by_output[o - wp->outputs];
+    return slot > 0 ? &look->scenes[slot - 1] : NULL;
 }
 
 static struct scene *output_scene(struct wallpaper *wp, struct look *look, const struct output *o) {
     int index = (int)(o - wp->outputs);
-    if (!look->by_output[index]) look->by_output[index] = scene_with_image(wp, look, image_for(wp, o));
-    return look->by_output[index];
+    if (look->by_output[index] == SCENE_UNRESOLVED) look->by_output[index] = scene_with_image(wp, look, image_for(wp, o));
+    return look_scene_for(look, wp, o);
 }
 
 static void look_clear(struct look *look) {
@@ -206,6 +215,7 @@ static void schedule_lock_screen(struct wallpaper *wp) {
 }
 
 static void start_crossfade(struct wallpaper *wp) {
+    make_any_surface_current(wp);
     look_clear(&wp->previous);
     wp->previous = wp->current;
     memset(&wp->current, 0, sizeof wp->current);
@@ -232,6 +242,7 @@ static void reload_if_changed(struct wallpaper *wp) {
         stop_requested = 1;
         return;
     }
+    if (!memcmp(&next, &wp->cfg, sizeof next)) return;
     if (next.renderer != wp->cfg.renderer) fprintf(stderr, "driftpaper: restart driftpaper to switch the renderer\n");
     wp->cfg = next;
     if (wp->renderer_ready) start_crossfade(wp);
@@ -253,7 +264,7 @@ static void draw_output(struct output *o, float time, float fade) {
     eglMakeCurrent(wp->egl.display, o->egl_surface, o->egl_surface, wp->egl.context);
 
     struct scene *scene = output_scene(wp, &wp->current, o);
-    struct scene *fading = fade < 1 ? wp->previous.by_output[o - wp->outputs] : NULL;
+    struct scene *fading = fade < 1 ? look_scene_for(&wp->previous, wp, o) : NULL;
     if (!scene && !fading) return;
     float aspect;
     struct viewport viewport = output_viewport(o, &aspect);
@@ -427,7 +438,7 @@ static void registry_global_remove(void *data, struct wl_registry *registry, uin
         struct output *o = &wp->outputs[i];
         if (!o->wl_output || o->registry_name != name) continue;
         destroy_surface(o);
-        wp->current.by_output[i] = wp->previous.by_output[i] = NULL;
+        wp->current.by_output[i] = wp->previous.by_output[i] = SCENE_UNRESOLVED;
         wl_output_destroy(o->wl_output);
         o->wl_output = NULL;
         o->announced = 0;

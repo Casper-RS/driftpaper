@@ -24,7 +24,7 @@ static struct {
     struct analysis analysis;
     guint save_timeout;
     gboolean updating;
-    GtkWidget *image_row, *image_group, *preset_row, *enabled_row, *login_row;
+    GtkWidget *image_row, *image_group, *preset_row, *enabled_row, *start_button, *login_row;
     struct monitor {
         char connector[32];
         GtkWidget *tile, *picture, *reset, *show;
@@ -200,11 +200,21 @@ static void on_monitor_picture_reset(GtkButton *button, gpointer data) {
 }
 
 static void on_monitor_toggled(GObject *toggle, GParamSpec *pspec, gpointer data) {
+    if (ui.updating) return;
     int toggled = GPOINTER_TO_INT(data);
-    gboolean shown[MAX_OUTPUTS_FILTER], all = TRUE;
+    gboolean shown[MAX_OUTPUTS_FILTER], all = TRUE, any = FALSE;
     for (int i = 0; i < ui.n_monitors; i++) {
         shown[i] = i == toggled ? gtk_switch_get_active(GTK_SWITCH(toggle)) : monitor_shown(ui.monitors[i].connector);
         all &= shown[i];
+        any |= shown[i];
+    }
+    // An empty list means "every monitor", so the last one can't be switched off here.
+    if (!any) {
+        ui.updating = TRUE;
+        gtk_switch_set_active(GTK_SWITCH(toggle), TRUE);
+        ui.updating = FALSE;
+        toast("To hide it everywhere, switch off Animated wallpaper");
+        return;
     }
     ui.cfg.n_outputs = 0;
     for (int i = 0; i < ui.n_monitors && !all; i++)
@@ -253,20 +263,42 @@ static void start_wallpaper(void) {
 
 static gboolean refresh_status(gpointer data) {
     gboolean running = runtime_wallpaper_running();
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(ui.enabled_row), running ? "Running" : "Not running");
+    const char *status = running ? "Running" : ui.cfg.enabled ? "Not running" : "Off";
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(ui.enabled_row), status);
+    gtk_widget_set_visible(ui.start_button, ui.cfg.enabled && !running);
     return G_SOURCE_CONTINUE;
 }
 
-static void refresh_status_once(gpointer data) {
-    refresh_status(data);
+// A wallpaper that was just switched off may still be exiting, so check again after it is gone.
+static void start_if_still_stopped(gpointer data) {
+    if (ui.cfg.enabled && !runtime_wallpaper_running()) start_wallpaper();
+    refresh_status(NULL);
+}
+
+static void on_start_clicked(GtkButton *button, gpointer data) {
+    start_wallpaper();
+    g_timeout_add_seconds_once(STATUS_INTERVAL_S, start_if_still_stopped, NULL);
+}
+
+static void set_switch_quietly(GtkWidget *row, gboolean active) {
+    ui.updating = TRUE;
+    adw_switch_row_set_active(ADW_SWITCH_ROW(row), active);
+    ui.updating = FALSE;
 }
 
 static void on_enabled_toggled(GObject *row, GParamSpec *pspec, gpointer data) {
-    ui.cfg.enabled = adw_switch_row_get_active(ADW_SWITCH_ROW(row));
+    if (ui.updating) return;
+    gboolean enable = adw_switch_row_get_active(ADW_SWITCH_ROW(row));
+    if (enable && !ui.cfg.image[0]) {
+        set_switch_quietly(ui.enabled_row, FALSE);
+        toast("Choose a picture first");
+        return;
+    }
+    ui.cfg.enabled = enable;
     flush_save();
     write_config();
-    if (ui.cfg.enabled && !runtime_wallpaper_running()) start_wallpaper();
-    g_timeout_add_seconds_once(STATUS_INTERVAL_S, refresh_status_once, NULL);
+    if (enable && !runtime_wallpaper_running()) start_wallpaper();
+    g_timeout_add_seconds_once(STATUS_INTERVAL_S, start_if_still_stopped, NULL);
 }
 
 static char *autostart_path(void) {
@@ -479,6 +511,11 @@ static GtkWidget *build_wallpaper_page(void) {
 
     AdwPreferencesGroup *wallpaper = add_group(page, "Wallpaper", NULL);
     ui.enabled_row = switch_row(wallpaper, "Animated wallpaper", c->enabled, G_CALLBACK(on_enabled_toggled));
+    ui.start_button = gtk_button_new_with_label("Start");
+    gtk_widget_set_valign(ui.start_button, GTK_ALIGN_CENTER);
+    gtk_widget_set_visible(ui.start_button, FALSE);
+    g_signal_connect(ui.start_button, "clicked", G_CALLBACK(on_start_clicked), NULL);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(ui.enabled_row), ui.start_button);
     g_autofree char *autostart = autostart_path();
     ui.login_row = switch_row(wallpaper, "Start on login", g_file_test(autostart, G_FILE_TEST_EXISTS),
                               G_CALLBACK(on_login_toggled));
