@@ -10,14 +10,23 @@ enum motion { MOTION_ORBIT, MOTION_RISE, MOTION_FALL, MOTION_DRIFT };
 enum distribution { DIST_EVEN, DIST_OUTER, DIST_INNER };
 enum direction { DIR_BOTH, DIR_CW, DIR_CCW };
 enum scale_mode { SCALE_FILL, SCALE_FIT, SCALE_STRETCH };
-enum renderer { RENDERER_AUTO, RENDERER_GPU, RENDERER_CPU };
+enum renderer_kind { RENDERER_AUTO, RENDERER_GPU, RENDERER_CPU };
 
 extern const char *shape_names[SHAPE_COUNT];
 
+struct output_image {
+    char output[32];
+    char image[PATH_LEN];
+};
+
 struct config {
     char image[PATH_LEN];
+    struct output_image output_images[MAX_OUTPUTS_FILTER];
+    int n_output_images;
+    int span;
+    int lock_screen_sync;
     int enabled;
-    enum renderer renderer;
+    enum renderer_kind renderer;
     int fps;
     float render_scale;
     char outputs[MAX_OUTPUTS_FILTER][32];
@@ -65,6 +74,9 @@ int config_preset_count(void);
 const char *config_preset_name(int index);
 const char *config_preset_description(int index);
 const char *config_default_path(void);
+// The picture for a monitor: its own image.<name> if set, otherwise the main image.
+const char *config_image_for(const struct config *c, const char *output);
+int config_set_output_image(struct config *c, const char *output, const char *image);
 
 // fps and render_scale of 0 mean "auto": full quality on a GPU, reduced on the CPU renderer.
 int config_fps(const struct config *c);

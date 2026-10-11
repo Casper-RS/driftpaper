@@ -6,10 +6,13 @@
 #include "analyze.h"
 #include "bindings.h"
 #include "config.h"
+#include "lockscreen.h"
 #include "runtime.h"
 #include "stb_image.h"
 
+#ifndef APP_ID
 #define APP_ID "io.github.casper_rs.driftpaper"
+#endif
 #define SAVE_DELAY_MS 300
 #define STATUS_INTERVAL_S 2
 #define COLOR_SLOTS 4
@@ -22,6 +25,11 @@ static struct {
     guint save_timeout;
     gboolean updating;
     GtkWidget *image_row, *image_group, *preview, *preset_row, *enabled_row, *login_row;
+    struct monitor {
+        char connector[32];
+        GtkWidget *picture_row;
+    } monitors[MAX_OUTPUTS_FILTER];
+    int n_monitors;
 } ui;
 
 static void toast(const char *message) {
@@ -120,7 +128,15 @@ static void on_setting_changed(void) {
     schedule_save();
 }
 
+static void describe_monitor(const struct monitor *m) {
+    const char *own = config_image_for(&ui.cfg, m->connector);
+    g_autofree char *name = own != ui.cfg.image ? g_path_get_basename(own) : g_strdup("Same as the main picture");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(m->picture_row), name);
+}
+
+// Browse buttons pass 0 for the main picture and 1 + index for a monitor's own picture.
 static void on_image_chosen(GObject *source, GAsyncResult *result, gpointer data) {
+    int target = GPOINTER_TO_INT(data);
     g_autoptr(GFile) file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, NULL);
     if (!file) return;
     g_autofree char *path = g_file_get_path(file);
@@ -128,9 +144,15 @@ static void on_image_chosen(GObject *source, GAsyncResult *result, gpointer data
         toast("That location can't be used, pick a local file");
         return;
     }
-    snprintf(ui.cfg.image, sizeof ui.cfg.image, "%s", path);
-    analyze_current_image();
-    bindings_refresh();
+    if (target == 0) {
+        snprintf(ui.cfg.image, sizeof ui.cfg.image, "%s", path);
+        analyze_current_image();
+        bindings_refresh();
+    } else {
+        struct monitor *m = &ui.monitors[target - 1];
+        config_set_output_image(&ui.cfg, m->connector, path);
+        describe_monitor(m);
+    }
     schedule_save();
 }
 
@@ -154,7 +176,34 @@ static void on_browse_clicked(GtkButton *button, gpointer data) {
         g_autoptr(GFile) initial = g_file_new_for_path(folder);
         gtk_file_dialog_set_initial_folder(dialog, initial);
     }
-    gtk_file_dialog_open(dialog, ui.window, NULL, on_image_chosen, NULL);
+    gtk_file_dialog_open(dialog, ui.window, NULL, on_image_chosen, data);
+}
+
+static void on_monitor_picture_reset(GtkButton *button, gpointer data) {
+    struct monitor *m = &ui.monitors[GPOINTER_TO_INT(data)];
+    config_set_output_image(&ui.cfg, m->connector, NULL);
+    describe_monitor(m);
+    schedule_save();
+}
+
+static int monitor_shown(const char *connector) {
+    if (ui.cfg.n_outputs == 0) return 1;
+    for (int i = 0; i < ui.cfg.n_outputs; i++)
+        if (!strcmp(ui.cfg.outputs[i], connector)) return 1;
+    return 0;
+}
+
+static void on_monitor_toggled(GObject *row, GParamSpec *pspec, gpointer data) {
+    int toggled = GPOINTER_TO_INT(data);
+    gboolean shown[MAX_OUTPUTS_FILTER], all = TRUE;
+    for (int i = 0; i < ui.n_monitors; i++) {
+        shown[i] = i == toggled ? adw_switch_row_get_active(ADW_SWITCH_ROW(row)) : monitor_shown(ui.monitors[i].connector);
+        all &= shown[i];
+    }
+    ui.cfg.n_outputs = 0;
+    for (int i = 0; i < ui.n_monitors && !all; i++)
+        if (shown[i]) snprintf(ui.cfg.outputs[ui.cfg.n_outputs++], sizeof ui.cfg.outputs[0], "%s", ui.monitors[i].connector);
+    schedule_save();
 }
 
 static void on_preset_selected(GObject *row, GParamSpec *pspec, gpointer data) {
@@ -171,6 +220,10 @@ static void on_preset_selected(GObject *row, GParamSpec *pspec, gpointer data) {
     fresh.renderer = current->renderer;
     fresh.fps = current->fps;
     fresh.render_scale = current->render_scale;
+    memcpy(fresh.output_images, current->output_images, sizeof fresh.output_images);
+    fresh.n_output_images = current->n_output_images;
+    fresh.span = current->span;
+    fresh.lock_screen_sync = current->lock_screen_sync;
     ui.cfg = fresh;
 
     use_detected_colors();
@@ -303,13 +356,13 @@ static AdwPreferencesGroup *add_group(AdwPreferencesPage *page, const char *titl
 }
 
 static GtkWidget *button_row(AdwPreferencesGroup *group, const char *title, const char *subtitle,
-                             const char *label, GCallback on_click) {
+                             const char *label, GCallback on_click, gpointer data) {
     GtkWidget *row = adw_action_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
     if (subtitle) adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
     GtkWidget *button = gtk_button_new_with_label(label);
     gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
-    g_signal_connect(button, "clicked", on_click, NULL);
+    g_signal_connect(button, "clicked", on_click, data);
     adw_action_row_add_suffix(ADW_ACTION_ROW(row), button);
     adw_action_row_set_activatable_widget(ADW_ACTION_ROW(row), button);
     adw_preferences_group_add(group, row);
@@ -325,6 +378,58 @@ static GtkWidget *switch_row(AdwPreferencesGroup *group, const char *title, gboo
     return row;
 }
 
+static GtkWidget *flat_button(const char *icon, const char *tooltip, GCallback on_click, gpointer data) {
+    GtkWidget *button = gtk_button_new_from_icon_name(icon);
+    gtk_widget_set_tooltip_text(button, tooltip);
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(button, "flat");
+    g_signal_connect(button, "clicked", on_click, data);
+    return button;
+}
+
+static void add_monitor_row(AdwPreferencesGroup *group, GdkMonitor *monitor) {
+    const char *connector = gdk_monitor_get_connector(monitor);
+    if (!connector || ui.n_monitors == MAX_OUTPUTS_FILTER) return;
+    int index = ui.n_monitors++;
+    struct monitor *m = &ui.monitors[index];
+    snprintf(m->connector, sizeof m->connector, "%s", connector);
+
+    GtkWidget *expander = adw_expander_row_new();
+    const char *model = gdk_monitor_get_model(monitor);
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(expander), model ? model : connector);
+    adw_expander_row_set_subtitle(ADW_EXPANDER_ROW(expander), connector);
+    adw_preferences_group_add(group, expander);
+
+    GtkWidget *show = adw_switch_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(show), "Show the wallpaper");
+    adw_switch_row_set_active(ADW_SWITCH_ROW(show), monitor_shown(connector));
+    g_signal_connect(show, "notify::active", G_CALLBACK(on_monitor_toggled), GINT_TO_POINTER(index));
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), show);
+
+    m->picture_row = adw_action_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(m->picture_row), "Picture");
+    adw_action_row_add_suffix(ADW_ACTION_ROW(m->picture_row),
+                              flat_button("edit-undo-symbolic", "Use the main picture",
+                                          G_CALLBACK(on_monitor_picture_reset), GINT_TO_POINTER(index)));
+    GtkWidget *browse = gtk_button_new_with_label("Browse…");
+    gtk_widget_set_valign(browse, GTK_ALIGN_CENTER);
+    g_signal_connect(browse, "clicked", G_CALLBACK(on_browse_clicked), GINT_TO_POINTER(index + 1));
+    adw_action_row_add_suffix(ADW_ACTION_ROW(m->picture_row), browse);
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), m->picture_row);
+    bind_disable_when(m->picture_row, &ui.cfg.span, 1);
+    describe_monitor(m);
+}
+
+static void add_monitor_group(AdwPreferencesPage *page) {
+    AdwPreferencesGroup *group = add_group(page, "Monitors", NULL);
+    bind_bool(group, "One picture across all monitors", "Stretches the main picture over every monitor", &ui.cfg.span);
+    GListModel *monitors = gdk_display_get_monitors(gdk_display_get_default());
+    for (guint i = 0; i < g_list_model_get_n_items(monitors); i++) {
+        g_autoptr(GdkMonitor) monitor = g_list_model_get_item(monitors, i);
+        add_monitor_row(group, monitor);
+    }
+}
+
 static GtkWidget *build_wallpaper_page(void) {
     AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
     struct config *c = &ui.cfg;
@@ -337,7 +442,7 @@ static GtkWidget *build_wallpaper_page(void) {
 
     AdwPreferencesGroup *image = add_group(page, "Image", NULL);
     ui.image_group = GTK_WIDGET(image);
-    ui.image_row = button_row(image, "Picture", NULL, "Browse…", G_CALLBACK(on_browse_clicked));
+    ui.image_row = button_row(image, "Picture", NULL, "Browse…", G_CALLBACK(on_browse_clicked), NULL);
     ui.preview = gtk_picture_new();
     gtk_picture_set_content_fit(GTK_PICTURE(ui.preview), GTK_CONTENT_FIT_COVER);
     gtk_widget_set_size_request(ui.preview, -1, 200);
@@ -354,8 +459,13 @@ static GtkWidget *build_wallpaper_page(void) {
     g_signal_connect(ui.preset_row, "notify::selected", G_CALLBACK(on_preset_selected), NULL);
     adw_preferences_group_add(image, ui.preset_row);
 
+    add_monitor_group(page);
+
     AdwPreferencesGroup *lock = add_group(page, "Lock screen", "Most lock screens show a still image.");
-    button_row(lock, "Matching still image", "Export the current look as a PNG", "Export…", G_CALLBACK(on_export_clicked));
+    if (lockscreen_supported())
+        bind_bool(lock, "Keep the lock screen in sync", "Updates COSMIC's lock and login background to match",
+                  &c->lock_screen_sync);
+    button_row(lock, "Matching still image", "Export the current look as a PNG", "Export…", G_CALLBACK(on_export_clicked), NULL);
 
     AdwPreferencesGroup *performance = add_group(page, "Performance", "Renderer changes apply after restarting the wallpaper.");
     static const char *renderers[] = {"Automatic", "Graphics card", "Processor (software)", NULL};

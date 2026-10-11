@@ -1,8 +1,10 @@
+#define _GNU_SOURCE
 #include "render.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "stb_image.h"
 
 #define TAU 6.2831853f
@@ -16,8 +18,8 @@
     "precision mediump float;\n" \
     "#endif\n"
 
-// Positions are in "screen units": screen heights from the top-left corner,
-// so a 16:9 screen spans x 0..1.78 and y 0..1.
+// Positions are in "canvas units": canvas heights from the top-left corner, so a 16:9 canvas
+// spans x 0..1.78 and y 0..1. The canvas is one monitor, or all monitors together with span.
 
 static const char *BACKGROUND_VS =
     "attribute vec2 position;\n"
@@ -30,8 +32,9 @@ static const char *BACKGROUND_VS =
 static const char *BACKGROUND_FS = FRAGMENT_PRECISION
     "varying vec2 screen;\n"
     "uniform sampler2D tex;\n"
-    "uniform float time, aspect, fit, ellipse, fog, glow, pulse, brightness, contrast, saturation;\n"
+    "uniform float time, aspect, fit, ellipse, fog, glow, pulse, brightness, contrast, saturation, opacity;\n"
     "uniform vec2 resolution, uv_scale, center, glow_falloff;\n"
+    "uniform vec4 viewport;\n"
     "uniform vec3 letterbox, fog_a, fog_b, glow_a, glow_b, hue_adjust;\n"
     "\n"
     "float noise(vec2 p) {\n"
@@ -72,24 +75,26 @@ static const char *BACKGROUND_FS = FRAGMENT_PRECISION
     "}\n"
     "\n"
     "void main() {\n"
-    "    vec2 uv = (screen - 0.5) * uv_scale + 0.5;\n"
+    "    vec2 canvas = viewport.xy + screen * viewport.zw;\n"
+    "    vec2 uv = (canvas - 0.5) * uv_scale + 0.5;\n"
     "    bool outside = uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;\n"
     "    vec3 c = fit > 0.5 && outside ? letterbox : adjust_image(texture2D(tex, uv).rgb);\n"
-    "    vec2 p = screen * vec2(aspect, 1.0);\n"
+    "    vec2 p = canvas * vec2(aspect, 1.0);\n"
     "    vec2 offset = (p - center) / vec2(ellipse, 1.0);\n"
     "    float d2 = dot(offset, offset);\n"
     "    if (fog > 0.0) c += drifting_fog(p, exp(-d2 * 2.2));\n"
     "    if (glow > 0.0) c += breathing_glow(d2);\n"
     "    c += (noise(floor(screen * resolution) + fract(time) * 17.0) - 0.5) / 255.0;\n"
-    "    gl_FragColor = vec4(c, 1.0);\n"
+    "    gl_FragColor = vec4(c, opacity);\n"
     "}\n";
 
 // Per particle: shape = (u, v, size, kind), color = rgba, motion = (phase, speed, rotation, spin).
 // Orbit uses u = angle and v = radius in image heights; the other motions use u, v as a 0..1 position.
 static const char *PARTICLE_VS =
     "attribute vec4 shape, color, motion_params;\n"
-    "uniform float time, aspect, radius_scale, inner, ellipse, motion, breathe, twinkle;\n"
+    "uniform float time, aspect, radius_scale, inner, ellipse, motion, breathe, twinkle, opacity;\n"
     "uniform vec2 resolution, center;\n"
+    "uniform vec4 viewport;\n"
     "varying vec4 tint;\n"
     "varying float kind, rotation;\n"
     "\n"
@@ -127,11 +132,12 @@ static const char *PARTICLE_VS =
     "    fade *= smoothstep(clear_radius, clear_radius + 0.04, length((p - center) / vec2(ellipse, 1.0)));\n"
     "    float flicker = 1.0 - twinkle + twinkle * sin(time * (0.7 + fract(phase()) * 1.3) + phase() * 6.0);\n"
     "\n"
-    "    tint = vec4(color.rgb, color.a * max(flicker, 0.0) * fade);\n"
+    "    tint = vec4(color.rgb, color.a * max(flicker, 0.0) * fade * opacity);\n"
     "    kind = shape.w;\n"
     "    rotation = motion_params.z + time * motion_params.w;\n"
-    "    gl_PointSize = shape.z * resolution.y / 1440.0;\n"
-    "    gl_Position = vec4(p.x / aspect * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);\n"
+    "    vec2 on_screen = (vec2(p.x / aspect, p.y) - viewport.xy) / viewport.zw;\n"
+    "    gl_PointSize = shape.z * resolution.y / viewport.w / 1440.0;\n"
+    "    gl_Position = vec4(on_screen.x * 2.0 - 1.0, 1.0 - on_screen.y * 2.0, 0.0, 1.0);\n"
     "}\n";
 
 static const char *PARTICLE_FS = FRAGMENT_PRECISION
@@ -212,14 +218,15 @@ static GLuint link_program(const char *vertex, const char *fragment, const char 
     return program;
 }
 
-static void find_uniforms(struct scene *s) {
-    GLuint p = s->background_program;
-    s->bg = (struct background_uniforms){
+static void find_uniforms(struct renderer *r) {
+    GLuint p = r->background_program;
+    r->bg = (struct background_uniforms){
         .tex = glGetUniformLocation(p, "tex"), .time = glGetUniformLocation(p, "time"),
         .aspect = glGetUniformLocation(p, "aspect"), .fit = glGetUniformLocation(p, "fit"),
         .ellipse = glGetUniformLocation(p, "ellipse"), .resolution = glGetUniformLocation(p, "resolution"),
         .uv_scale = glGetUniformLocation(p, "uv_scale"), .center = glGetUniformLocation(p, "center"),
-        .letterbox = glGetUniformLocation(p, "letterbox"), .fog_a = glGetUniformLocation(p, "fog_a"),
+        .letterbox = glGetUniformLocation(p, "letterbox"), .viewport = glGetUniformLocation(p, "viewport"),
+        .opacity = glGetUniformLocation(p, "opacity"), .fog_a = glGetUniformLocation(p, "fog_a"),
         .fog_b = glGetUniformLocation(p, "fog_b"), .glow_a = glGetUniformLocation(p, "glow_a"),
         .glow_b = glGetUniformLocation(p, "glow_b"), .fog = glGetUniformLocation(p, "fog"),
         .glow = glGetUniformLocation(p, "glow"), .glow_falloff = glGetUniformLocation(p, "glow_falloff"),
@@ -227,36 +234,40 @@ static void find_uniforms(struct scene *s) {
         .contrast = glGetUniformLocation(p, "contrast"), .saturation = glGetUniformLocation(p, "saturation"),
         .hue_adjust = glGetUniformLocation(p, "hue_adjust"),
     };
-    p = s->particle_program;
-    s->pt = (struct particle_uniforms){
+    p = r->particle_program;
+    r->pt = (struct particle_uniforms){
         .time = glGetUniformLocation(p, "time"), .aspect = glGetUniformLocation(p, "aspect"),
         .radius_scale = glGetUniformLocation(p, "radius_scale"), .inner = glGetUniformLocation(p, "inner"),
         .ellipse = glGetUniformLocation(p, "ellipse"), .motion = glGetUniformLocation(p, "motion"),
         .breathe = glGetUniformLocation(p, "breathe"), .twinkle = glGetUniformLocation(p, "twinkle"),
         .resolution = glGetUniformLocation(p, "resolution"), .center = glGetUniformLocation(p, "center"),
+        .viewport = glGetUniformLocation(p, "viewport"), .opacity = glGetUniformLocation(p, "opacity"),
     };
 }
 
-int render_init(struct scene *s) {
-    memset(s, 0, sizeof *s);
+int renderer_init(struct renderer *r) {
+    memset(r, 0, sizeof *r);
     const char *background_attributes[] = {"position"};
     const char *particle_attributes[] = {"shape", "color", "motion_params"};
-    s->background_program = link_program(BACKGROUND_VS, BACKGROUND_FS, background_attributes, 1);
-    s->particle_program = link_program(PARTICLE_VS, PARTICLE_FS, particle_attributes, 3);
-    if (!s->background_program || !s->particle_program) return -1;
-    find_uniforms(s);
+    r->background_program = link_program(BACKGROUND_VS, BACKGROUND_FS, background_attributes, 1);
+    r->particle_program = link_program(PARTICLE_VS, PARTICLE_FS, particle_attributes, 3);
+    if (!r->background_program || !r->particle_program) return -1;
+    find_uniforms(r);
 
     // A single triangle larger than the screen covers it without a diagonal seam.
     static const float fullscreen_triangle[] = {-1, -1, 3, -1, -1, 3};
-    glGenBuffers(1, &s->triangle_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, s->triangle_vbo);
+    glGenBuffers(1, &r->triangle_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, r->triangle_vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof fullscreen_triangle, fullscreen_triangle, GL_STATIC_DRAW);
-    glGenBuffers(1, &s->particle_vbo);
-    glGenTextures(1, &s->texture);
     return 0;
 }
 
-int render_load_image(struct scene *s, const char *path, float ellipse) {
+static struct timespec modification_time(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 ? st.st_mtim : (struct timespec){0};
+}
+
+static int load_image(struct image *img, const char *path, float ellipse) {
     int w, h, channels;
     unsigned char *pixels = stbi_load(path, &w, &h, &channels, 4);
     if (!pixels) {
@@ -271,19 +282,50 @@ int render_load_image(struct scene *s, const char *path, float ellipse) {
         return -1;
     }
 
-    glBindTexture(GL_TEXTURE_2D, s->texture);
+    glGenTextures(1, &img->texture);
+    glBindTexture(GL_TEXTURE_2D, img->texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-
-    analyze_image(pixels, w, h, ellipse, &s->analysis);
+    analyze_image(pixels, w, h, ellipse, &img->analysis);
     stbi_image_free(pixels);
-    s->image_width = w;
-    s->image_height = h;
+
+    snprintf(img->path, sizeof img->path, "%s", path);
+    img->mtime = modification_time(path);
+    img->ellipse = ellipse;
+    img->width = w;
+    img->height = h;
     return 0;
+}
+
+static int same_image(const struct image *img, const char *path, float ellipse, struct timespec mtime) {
+    return img->refs > 0 && !strcmp(img->path, path) && img->ellipse == ellipse &&
+           img->mtime.tv_sec == mtime.tv_sec && img->mtime.tv_nsec == mtime.tv_nsec;
+}
+
+static struct image *acquire_image(struct renderer *r, const char *path, float ellipse) {
+    struct timespec mtime = modification_time(path);
+    struct image *free_slot = NULL;
+    for (int i = 0; i < MAX_IMAGES; i++) {
+        struct image *img = &r->images[i];
+        if (same_image(img, path, ellipse, mtime)) {
+            img->refs++;
+            return img;
+        }
+        if (!img->refs && !free_slot) free_slot = img;
+    }
+    if (!free_slot || load_image(free_slot, path, ellipse)) return NULL;
+    free_slot->refs = 1;
+    return free_slot;
+}
+
+static void release_image(struct image *img) {
+    if (--img->refs > 0) return;
+    glDeleteTextures(1, &img->texture);
+    img->texture = 0;
 }
 
 static float random_unit(unsigned *seed) {
@@ -355,8 +397,11 @@ static void place_particle(const struct scene *s, const float (*palette)[3], int
     p[11] = random_between(seed, -0.3f, 0.3f) * cfg->spin * spin_boost;
 }
 
-void render_apply_config(struct scene *s, const struct config *cfg) {
-    const struct analysis *an = &s->analysis;
+int scene_create(struct renderer *r, struct scene *s, const char *image_path, const struct config *cfg) {
+    memset(s, 0, sizeof *s);
+    s->image = acquire_image(r, image_path, cfg->ellipse);
+    if (!s->image) return -1;
+    const struct analysis *an = &s->image->analysis;
     s->cfg = *cfg;
     s->center[0] = cfg->center_auto ? an->center_x : cfg->center_x;
     s->center[1] = cfg->center_auto ? an->center_y : cfg->center_y;
@@ -371,35 +416,45 @@ void render_apply_config(struct scene *s, const struct config *cfg) {
     memcpy(s->glow_b, secondary, sizeof s->glow_b);
 
     int count = cfg->count;
-    float *particles = calloc(count > 0 ? count : 1, FLOATS_PER_PARTICLE * sizeof(float));
-    unsigned seed = cfg->seed;
-    for (int i = 0; i < count; i++) place_particle(s, palette, n_palette, &seed, particles + FLOATS_PER_PARTICLE * i);
-
-    glBindBuffer(GL_ARRAY_BUFFER, s->particle_vbo);
-    glBufferData(GL_ARRAY_BUFFER, (count > 0 ? count : 1) * FLOATS_PER_PARTICLE * sizeof(float), particles, GL_STATIC_DRAW);
-    free(particles);
+    if (count > 0) {
+        float *particles = malloc(count * FLOATS_PER_PARTICLE * sizeof(float));
+        unsigned seed = cfg->seed;
+        for (int i = 0; i < count; i++) place_particle(s, palette, n_palette, &seed, particles + FLOATS_PER_PARTICLE * i);
+        glGenBuffers(1, &s->particle_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, s->particle_vbo);
+        glBufferData(GL_ARRAY_BUFFER, count * FLOATS_PER_PARTICLE * sizeof(float), particles, GL_STATIC_DRAW);
+        free(particles);
+    }
     s->particle_count = count;
+    return 0;
+}
+
+void scene_destroy(struct scene *s) {
+    if (s->particle_vbo) glDeleteBuffers(1, &s->particle_vbo);
+    if (s->image) release_image(s->image);
+    memset(s, 0, sizeof *s);
 }
 
 struct view {
     int width, height;
     float aspect, uv_scale[2], center[2], radius_scale;
+    struct viewport viewport;
 };
 
-// uv = (screen - 0.5) * uv_scale + 0.5 maps the screen onto the image for each scale mode.
-static struct view compute_view(const struct scene *s, int width, int height) {
-    struct view v = {.width = width, .height = height, .aspect = (float)width / height, .uv_scale = {1, 1}};
-    float image_aspect = (float)s->image_width / s->image_height;
-    int screen_wider = v.aspect > image_aspect;
+// uv = (canvas - 0.5) * uv_scale + 0.5 maps the canvas onto the image for each scale mode.
+static struct view compute_view(const struct scene *s, int width, int height, struct viewport viewport, float aspect) {
+    struct view v = {.width = width, .height = height, .aspect = aspect, .uv_scale = {1, 1}, .viewport = viewport};
+    float image_aspect = (float)s->image->width / s->image->height;
+    int canvas_wider = aspect > image_aspect;
     if (s->cfg.scale == SCALE_FILL) {
-        if (screen_wider) v.uv_scale[1] = image_aspect / v.aspect;
-        else v.uv_scale[0] = v.aspect / image_aspect;
+        if (canvas_wider) v.uv_scale[1] = image_aspect / aspect;
+        else v.uv_scale[0] = aspect / image_aspect;
     } else if (s->cfg.scale == SCALE_FIT) {
-        if (screen_wider) v.uv_scale[0] = v.aspect / image_aspect;
-        else v.uv_scale[1] = image_aspect / v.aspect;
+        if (canvas_wider) v.uv_scale[0] = aspect / image_aspect;
+        else v.uv_scale[1] = image_aspect / aspect;
     }
     v.radius_scale = 1 / v.uv_scale[1];
-    v.center[0] = ((s->center[0] - 0.5f) / v.uv_scale[0] + 0.5f) * v.aspect;
+    v.center[0] = ((s->center[0] - 0.5f) / v.uv_scale[0] + 0.5f) * aspect;
     v.center[1] = (s->center[1] - 0.5f) / v.uv_scale[1] + 0.5f;
     return v;
 }
@@ -408,24 +463,31 @@ static void scaled_color(GLint location, const float *rgb, float factor) {
     glUniform3f(location, rgb[0] * factor, rgb[1] * factor, rgb[2] * factor);
 }
 
-static void draw_background(const struct scene *s, const struct view *v, float time) {
+static void draw_background(const struct renderer *r, const struct scene *s, const struct view *v, float time, float opacity) {
     const struct config *cfg = &s->cfg;
-    const struct background_uniforms *u = &s->bg;
+    const struct background_uniforms *u = &r->bg;
     float glow_radius = s->inner_radius * v->radius_scale;
     float has_glow = glow_radius > 0;
 
-    glDisable(GL_BLEND);
-    glUseProgram(s->background_program);
+    if (opacity < 1) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    } else {
+        glDisable(GL_BLEND);
+    }
+    glUseProgram(r->background_program);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, s->texture);
+    glBindTexture(GL_TEXTURE_2D, s->image->texture);
     glUniform1i(u->tex, 0);
     glUniform1f(u->time, time);
     glUniform1f(u->aspect, v->aspect);
+    glUniform1f(u->opacity, opacity);
     glUniform1f(u->fit, cfg->scale == SCALE_FIT);
     glUniform1f(u->ellipse, 1 + (cfg->ellipse - 1) * 0.75f);
     glUniform2f(u->resolution, v->width, v->height);
     glUniform2fv(u->uv_scale, 1, v->uv_scale);
     glUniform2fv(u->center, 1, v->center);
+    glUniform4f(u->viewport, v->viewport.x, v->viewport.y, v->viewport.width, v->viewport.height);
     glUniform3fv(u->letterbox, 1, cfg->bg_color);
     scaled_color(u->fog_a, s->glow_a, 0.08f);
     scaled_color(u->fog_b, s->glow_b, 0.085f);
@@ -442,7 +504,7 @@ static void draw_background(const struct scene *s, const struct view *v, float t
     glUniform1f(u->saturation, cfg->saturation);
     glUniform3f(u->hue_adjust, cfg->hue_center, cfg->hue_width, cfg->hue_lightness);
 
-    glBindBuffer(GL_ARRAY_BUFFER, s->triangle_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, r->triangle_vbo);
     glEnableVertexAttribArray(0);
     glDisableVertexAttribArray(1);
     glDisableVertexAttribArray(2);
@@ -450,15 +512,16 @@ static void draw_background(const struct scene *s, const struct view *v, float t
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-static void draw_particles(const struct scene *s, const struct view *v, float time) {
+static void draw_particles(const struct renderer *r, const struct scene *s, const struct view *v, float time, float opacity) {
     const struct config *cfg = &s->cfg;
-    const struct particle_uniforms *u = &s->pt;
+    const struct particle_uniforms *u = &r->pt;
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    glUseProgram(s->particle_program);
+    glUseProgram(r->particle_program);
     glUniform1f(u->time, time);
     glUniform1f(u->aspect, v->aspect);
+    glUniform1f(u->opacity, opacity);
     glUniform1f(u->radius_scale, v->radius_scale);
     glUniform1f(u->inner, s->inner_radius);
     glUniform1f(u->ellipse, cfg->ellipse);
@@ -467,6 +530,7 @@ static void draw_particles(const struct scene *s, const struct view *v, float ti
     glUniform1f(u->twinkle, cfg->twinkle);
     glUniform2f(u->resolution, v->width, v->height);
     glUniform2fv(u->center, 1, v->center);
+    glUniform4f(u->viewport, v->viewport.x, v->viewport.y, v->viewport.width, v->viewport.height);
 
     glBindBuffer(GL_ARRAY_BUFFER, s->particle_vbo);
     for (int i = 0; i < 3; i++) {
@@ -476,9 +540,10 @@ static void draw_particles(const struct scene *s, const struct view *v, float ti
     glDrawArrays(GL_POINTS, 0, s->particle_count);
 }
 
-void render_draw(const struct scene *s, int width, int height, float time) {
-    struct view v = compute_view(s, width, height);
+void render_draw(const struct renderer *r, const struct scene *s, int width, int height, struct viewport viewport,
+                 float canvas_aspect, float time, float opacity) {
+    struct view v = compute_view(s, width, height, viewport, canvas_aspect);
     glViewport(0, 0, width, height);
-    draw_background(s, &v, time);
-    if (s->particle_count > 0) draw_particles(s, &v, time);
+    draw_background(r, s, &v, time, opacity);
+    if (s->particle_count > 0) draw_particles(r, s, &v, time, opacity);
 }

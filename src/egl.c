@@ -26,7 +26,7 @@ static int find_vendor_file(const char *keyword, char *out, size_t size) {
     return 0;
 }
 
-void egl_select_renderer(enum renderer renderer) {
+void egl_select_renderer(enum renderer_kind renderer) {
     char vendor[1024];
     if (renderer == RENDERER_GPU) {
         if (find_vendor_file("nvidia", vendor, sizeof vendor)) setenv("__EGL_VENDOR_LIBRARY_FILENAMES", vendor, 1);

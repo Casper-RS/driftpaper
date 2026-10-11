@@ -5,6 +5,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Sharp on HiDPI screens: renders at the monitor's real pixel density, including fractional
+  scaling (wp-fractional-scale-v1).
+- Smooth crossfade when the picture or look changes.
+- A different picture per monitor (`image.<monitor> = ...`), or one picture stretched across all
+  monitors (`span = true`).
+- Monitors section in the settings window: show or hide the wallpaper per monitor, pick a picture
+  per monitor, or stretch one across all.
+- COSMIC lock screen sync (`lock_screen_sync = true`): exports a still of each monitor a few
+  seconds after the look changes and sets it as COSMIC's background, so the lock and login
+  screens match.
+
+### Changed
+- Pictures are loaded and analysed once and shared, so changing settings no longer reloads them.
+
 ## [0.2.1] - 2026-10-11
 
 ### Changed

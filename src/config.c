@@ -103,6 +103,41 @@ static int parse_color(const char *s, float rgb[3]) {
 
 static int is_auto(const char *s) { return !strcasecmp(s, "auto"); }
 
+static int parse_bool(const char *s, int *out) {
+    if (!strcasecmp(s, "true") || !strcmp(s, "1") || !strcasecmp(s, "yes")) *out = 1;
+    else if (!strcasecmp(s, "false") || !strcmp(s, "0") || !strcasecmp(s, "no")) *out = 0;
+    else return -1;
+    return 0;
+}
+
+static void expand_home(char dst[PATH_LEN], const char *path) {
+    const char *home = getenv("HOME");
+    if (path[0] == '~' && path[1] == '/') snprintf(dst, PATH_LEN, "%s%s", home ? home : "", path + 1);
+    else snprintf(dst, PATH_LEN, "%s", path);
+}
+
+int config_set_output_image(struct config *c, const char *output, const char *image) {
+    int i = 0;
+    while (i < c->n_output_images && strcmp(c->output_images[i].output, output)) i++;
+    if (!image || !*image) {
+        if (i < c->n_output_images) c->output_images[i] = c->output_images[--c->n_output_images];
+        return 0;
+    }
+    if (i == c->n_output_images) {
+        if (i == MAX_OUTPUTS_FILTER) return -1;
+        c->n_output_images++;
+        snprintf(c->output_images[i].output, sizeof c->output_images[i].output, "%s", output);
+    }
+    expand_home(c->output_images[i].image, image);
+    return 0;
+}
+
+const char *config_image_for(const struct config *c, const char *output) {
+    for (int i = 0; output && i < c->n_output_images; i++)
+        if (!strcmp(c->output_images[i].output, output)) return c->output_images[i].image;
+    return c->image;
+}
+
 int config_set(struct config *c, const char *key, const char *value, const char *where) {
     char vbuf[PATH_LEN];
     snprintf(vbuf, sizeof vbuf, "%s", value);
@@ -112,16 +147,16 @@ int config_set(struct config *c, const char *key, const char *value, const char 
 
     if (!strcmp(key, "preset")) return 0;
     if (!strcmp(key, "image")) {
-        if (v[0] == '~' && v[1] == '/') snprintf(c->image, sizeof c->image, "%s%s", getenv("HOME") ? getenv("HOME") : "", v + 1);
-        else snprintf(c->image, sizeof c->image, "%s", v);
+        expand_home(c->image, v);
         return 0;
     }
-    if (!strcmp(key, "enabled")) {
-        if (!strcasecmp(v, "true") || !strcmp(v, "1") || !strcasecmp(v, "yes")) c->enabled = 1;
-        else if (!strcasecmp(v, "false") || !strcmp(v, "0") || !strcasecmp(v, "no")) c->enabled = 0;
-        else return bad(where, key, v, "true or false");
-        return 0;
+    if (!strncmp(key, "image.", 6)) {
+        if (!key[6] || strlen(key + 6) >= sizeof c->output_images[0].output) return bad(where, key, v, "image.<monitor name>");
+        return config_set_output_image(c, key + 6, v);
     }
+    if (!strcmp(key, "span")) return parse_bool(v, &c->span) ? bad(where, key, v, "true or false") : 0;
+    if (!strcmp(key, "lock_screen_sync")) return parse_bool(v, &c->lock_screen_sync) ? bad(where, key, v, "true or false") : 0;
+    if (!strcmp(key, "enabled")) return parse_bool(v, &c->enabled) ? bad(where, key, v, "true or false") : 0;
     if (!strcmp(key, "renderer")) {
         if ((e = parse_enum(v, renderer_names, 3)) < 0) return bad(where, key, v, "auto, gpu or cpu");
         c->renderer = e; return 0;
@@ -282,6 +317,14 @@ static int each_line(const char *path, int (*fn)(void *, char *, char *, int), v
     return rc;
 }
 
+static void make_relative_to(const char *config_path, char image[PATH_LEN]) {
+    const char *slash = strrchr(config_path, '/');
+    char joined[2 * PATH_LEN];
+    if (!image[0] || image[0] == '/' || !slash) return;
+    if (snprintf(joined, sizeof joined, "%.*s/%s", (int)(slash - config_path), config_path, image) < PATH_LEN)
+        memcpy(image, joined, PATH_LEN);
+}
+
 struct load_ctx { struct config *c; const char *path; char preset[64]; };
 
 static int find_preset(void *ud, char *k, char *v, int lineno) {
@@ -307,12 +350,8 @@ int config_load(struct config *c, const char *path, const char *preset_override)
     if (l.preset[0]) rc |= config_apply_preset(c, l.preset);
     if (have_file) {
         rc |= each_line(path, apply_line, &l);
-        if (c->image[0] && c->image[0] != '/') {
-            char tmp[2 * PATH_LEN];
-            const char *slash = strrchr(path, '/');
-            if (slash && snprintf(tmp, sizeof tmp, "%.*s/%s", (int)(slash - path), path, c->image) < PATH_LEN)
-                memcpy(c->image, tmp, PATH_LEN);
-        }
+        make_relative_to(path, c->image);
+        for (int i = 0; i < c->n_output_images; i++) make_relative_to(path, c->output_images[i].image);
     }
     return rc;
 }
@@ -325,6 +364,10 @@ void config_print(const struct config *c, FILE *f) {
     fprintf(f, "[general]\n");
     fprintf(f, "enabled = %s\n", c->enabled ? "true" : "false");
     fprintf(f, "image = %s\n", c->image);
+    for (int i = 0; i < c->n_output_images; i++)
+        fprintf(f, "image.%s = %s\n", c->output_images[i].output, c->output_images[i].image);
+    fprintf(f, "span = %s\n", c->span ? "true" : "false");
+    fprintf(f, "lock_screen_sync = %s\n", c->lock_screen_sync ? "true" : "false");
     fprintf(f, "renderer = %s\n", renderer_names[c->renderer]);
     if (c->fps) fprintf(f, "fps = %d\n", c->fps); else fprintf(f, "fps = auto\n");
     if (c->render_scale > 0) fprintf(f, "render_scale = %g\n", c->render_scale); else fprintf(f, "render_scale = auto\n");

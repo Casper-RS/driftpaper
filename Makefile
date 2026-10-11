@@ -19,12 +19,12 @@ GUI_LIBS   := $(if $(HAVE_GUI),$(shell $(PKG_CONFIG) --libs gtk4 libadwaita-1))
 
 WAYLAND_SCANNER ?= wayland-scanner
 BUILD := build
-PROTOCOLS := wlr-layer-shell-unstable-v1 xdg-shell viewporter
+PROTOCOLS := wlr-layer-shell-unstable-v1 xdg-shell viewporter fractional-scale-v1
 PROTO_HEADERS := $(PROTOCOLS:%=$(BUILD)/%-client-protocol.h)
 PROTO_OBJ := $(PROTOCOLS:%=$(BUILD)/%-protocol.o)
 OBJ := $(patsubst src/%.c,$(BUILD)/%.o,$(wildcard src/*.c)) $(PROTO_OBJ)
 GUI_OBJ := $(patsubst gui/%.c,$(BUILD)/gui/%.o,$(wildcard gui/*.c)) \
-           $(BUILD)/config.o $(BUILD)/analyze.o $(BUILD)/runtime.o $(BUILD)/stb.o
+           $(BUILD)/config.o $(BUILD)/analyze.o $(BUILD)/lockscreen.o $(BUILD)/runtime.o $(BUILD)/stb.o
 INC := -I$(BUILD) -Isrc -isystem third_party
 TARGETS := driftpaper $(if $(HAVE_GUI),driftpaper-settings)
 

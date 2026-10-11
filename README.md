@@ -19,7 +19,11 @@ breathing glow around it. It uses well under 1% of one CPU core on a GPU.
 - **Live config:** edit the config file while it runs and changes apply within a second.
 - **GPU or CPU rendering**, with lower resolution and frame rate on the CPU to keep it usable.
 - **Lock screen snapshots:** export a still PNG of the current look.
-- **Multi-monitor** support with hotplugging and a per-monitor filter.
+- **Multi-monitor:** a picture per monitor, or one picture stretched across all of them, with
+  hotplugging and per-monitor on/off.
+- **Sharp on HiDPI** screens, including fractional scaling.
+- **Smooth crossfade** when you change the picture or look.
+- **Lock screen sync on COSMIC:** the lock and login screens show a matching still.
 
 <img src="docs/settings-window.png" width="420" alt="driftpaper settings window">
 
@@ -111,7 +115,12 @@ For the Flatpak, use `Exec=flatpak run io.github.casper_rs.driftpaper` in the au
 
 ### Matching lock screen
 
-Most lock screens show a still image. Use **Export…** in the settings window, or:
+On COSMIC, switch on **Keep the lock screen in sync** (or `lock_screen_sync = true`): a few seconds
+after the look changes, driftpaper saves a still of each monitor to `~/.local/share/driftpaper/`
+and sets it as COSMIC's background, which the lock and login screens show. This replaces the
+background picked in COSMIC Settings.
+
+Elsewhere, use **Export…** in the settings window, or:
 
 ```sh
 driftpaper --snapshot ~/Pictures/driftpaper-lock.png --size 2560x1440
@@ -140,6 +149,9 @@ lists every setting with an explanation. The most useful ones:
 | `fog`, `glow` | 0 disables | Background effects |
 | `hue_adjust` | e.g. `220, 40, -0.2` | Darken or lighten one colour range of the image |
 | `outputs` | `all` or `DP-1, HDMI-A-1` | Which monitors to draw on |
+| `image.<monitor>` | path | A different picture for one monitor, e.g. `image.DP-2` |
+| `span` | `true`, `false` | Stretch the main picture across all monitors |
+| `lock_screen_sync` | `true`, `false` | COSMIC: keep the lock and login screens matching |
 
 ### CPU usage
 
@@ -164,7 +176,8 @@ src/render.c      OpenGL ES 2 shaders and particle generation
 src/wallpaper.c   Wayland outputs, frame loop and live reload
 src/snapshot.c    offscreen rendering to PNG
 src/egl.c         EGL setup and renderer selection
-src/runtime.c     single-instance lock and Wayland socket discovery
+src/runtime.c     single-instance lock, takeover and Wayland socket discovery
+src/lockscreen.c  COSMIC lock screen sync
 gui/settings.c    settings window (GTK 4 + libadwaita)
 gui/bindings.c    rows that edit config fields in place
 ```

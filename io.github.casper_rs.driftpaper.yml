@@ -13,6 +13,9 @@ finish-args:
   - --filesystem=home:ro
   - --filesystem=xdg-pictures
   - --filesystem=xdg-config/autostart:create
+  # Lock screen sync on COSMIC: still images plus COSMIC's background config.
+  - --filesystem=xdg-data/driftpaper:create
+  - --filesystem=xdg-config/cosmic/com.system76.CosmicBackground:create
 modules:
   - name: driftpaper
     buildsystem: simple
