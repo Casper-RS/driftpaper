@@ -369,9 +369,15 @@ int wallpaper_run(const struct settings_source *src, const struct config *initia
     }
     int lock = runtime_acquire_lock();
     if (lock == -1) {
-        fprintf(stderr, "driftpaper: already running\n");
-        return 0;
+        fprintf(stderr, "driftpaper: replacing the running wallpaper\n");
+        lock = runtime_take_over();
+        if (lock == -1) {
+            fprintf(stderr, "driftpaper: the running wallpaper did not stop, giving up\n");
+            return 1;
+        }
     }
+    struct timespec started;
+    clock_gettime(CLOCK_REALTIME, &started);
 
     static struct wallpaper wp;
     wp.src = src;
@@ -392,6 +398,10 @@ int wallpaper_run(const struct settings_source *src, const struct config *initia
         double now = monotonic_seconds();
         if (now >= next_reload_check) {
             next_reload_check = now + RELOAD_CHECK_INTERVAL;
+            if (runtime_takeover_requested(started)) {
+                fprintf(stderr, "driftpaper: another wallpaper took over, exiting\n");
+                break;
+            }
             reload_if_changed(&wp);
             for (int i = 0; i < wp.n_outputs; i++) sync_surface(&wp.outputs[i]);
         }

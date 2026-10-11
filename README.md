@@ -87,7 +87,7 @@ The easiest way is the settings window: run `driftpaper-settings` or open **drif
 your app menu. Everything below is also available from the command line:
 
 ```sh
-driftpaper ~/Pictures/wall.png                # run with an image
+driftpaper ~/Pictures/wall.png                # run with an image (replaces a running one)
 driftpaper -p embers ~/Pictures/wall.png      # use a preset
 driftpaper -s count=300 -s motion=drift       # override single settings
 driftpaper --list                             # presets, shapes and motions

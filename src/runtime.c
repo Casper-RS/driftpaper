@@ -35,9 +35,13 @@ int runtime_find_wayland_display(void) {
     return -1;
 }
 
+static void runtime_file(const char *name, char *out, size_t size) {
+    snprintf(out, size, "%s/%s", runtime_dir(), name);
+}
+
 static int open_lock_file(void) {
     char path[600];
-    snprintf(path, sizeof path, "%s/driftpaper.lock", runtime_dir());
+    runtime_file("driftpaper.lock", path, sizeof path);
     return open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
 }
 
@@ -64,4 +68,32 @@ int runtime_wallpaper_running(void) {
     int locked = fcntl(fd, F_GETLK, &lock) == 0 && lock.l_type != F_UNLCK;
     close(fd);
     return locked;
+}
+
+#define TAKEOVER_WAIT_MS 5000
+#define TAKEOVER_POLL_MS 100
+
+int runtime_take_over(void) {
+    char path[600];
+    runtime_file("driftpaper.takeover", path, sizeof path);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd >= 0) {
+        futimens(fd, NULL);
+        close(fd);
+    }
+    for (int waited = 0; waited < TAKEOVER_WAIT_MS; waited += TAKEOVER_POLL_MS) {
+        int lock = runtime_acquire_lock();
+        if (lock != -1) return lock;
+        usleep(TAKEOVER_POLL_MS * 1000);
+    }
+    return -1;
+}
+
+int runtime_takeover_requested(struct timespec since) {
+    char path[600];
+    runtime_file("driftpaper.takeover", path, sizeof path);
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return st.st_mtim.tv_sec > since.tv_sec ||
+           (st.st_mtim.tv_sec == since.tv_sec && st.st_mtim.tv_nsec > since.tv_nsec);
 }
