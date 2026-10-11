@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag, Makefile and changelog agree
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          makefile_version=$(sed -n 's/^VERSION *?= *//p' Makefile)
+          if [ "$version" != "$makefile_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Makefile VERSION $makefile_version"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  binary:
+    needs: check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libegl-dev libgles-dev
+
+      - name: Build
+        run: make
+
+      - name: Package
+        run: |
+          name="driftpaper-${{ needs.check.outputs.version }}-linux-x86_64"
+          mkdir -p "$name/dist"
+          cp driftpaper LICENSE README.md CHANGELOG.md "$name/"
+          cp -r examples "$name/"
+          cp dist/driftpaper.desktop dist/driftpaper.service.in "$name/dist/"
+          tar czf "$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary
+          path: driftpaper-*.tar.gz
+
+  flatpak:
+    needs: check
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+        with:
+          bundle: driftpaper-${{ needs.check.outputs.version }}.flatpak
+          manifest-path: io.github.casper_rs.driftpaper.yml
+          upload-artifact: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: driftpaper-*.flatpak
+
+  release:
+    needs: [check, binary, flatpak]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v version="${{ needs.check.outputs.version }}" '
+            $0 ~ "^## \\[" version "\\]" { printing = 1; next }
+            printing && /^## \[/ { exit }
+            printing && /^\[.*\]: / { exit }
+            printing { print }
+          ' CHANGELOG.md > release-notes.md
+          cat release-notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: driftpaper ${{ needs.check.outputs.version }}
+          body_path: release-notes.md
+          files: artifacts/*

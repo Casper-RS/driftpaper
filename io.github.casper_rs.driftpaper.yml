@@ -1,0 +1,27 @@
+app-id: io.github.casper_rs.driftpaper
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: driftpaper
+finish-args:
+  # Wallpapers need wlr-layer-shell, which compositors hide from Flatpak's filtered Wayland
+  # socket, so the compositor's own socket is shared instead.
+  - --filesystem=xdg-run/wayland-0
+  - --filesystem=xdg-run/wayland-1
+  - --device=dri
+  - --filesystem=home:ro
+modules:
+  - name: driftpaper
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app
+      - make install PREFIX=/app
+      - install -Dm644 dist/io.github.casper_rs.driftpaper.metainfo.xml /app/share/metainfo/io.github.casper_rs.driftpaper.metainfo.xml
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - build
+          - driftpaper
+          - .flatpak-builder
+          - flatpak-build

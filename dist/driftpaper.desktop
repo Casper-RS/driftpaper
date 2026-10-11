@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=driftpaper
+Comment=Animated particle wallpaper
+Exec=driftpaper
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

@@ -1,0 +1,5 @@
+/build/
+/driftpaper
+/.flatpak-builder/
+/flatpak-build/
+*.flatpak

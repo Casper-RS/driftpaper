@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwayland-dev libegl-dev libgles-dev
+
+      - name: Build
+        run: make CFLAGS="-O2 -Werror"
+
+      - name: Smoke test
+        run: |
+          ./driftpaper --version
+          ./driftpaper --list
+          ./driftpaper -c examples/config.ini --print-config
+          ./driftpaper -c /dev/null --analyze examples/shard-star.jpg
