@@ -1,4 +1,4 @@
-VERSION   ?= 0.2.1
+VERSION   ?= 0.3.0
 PREFIX    ?= /usr/local
 BINDIR    ?= $(PREFIX)/bin
 DATADIR   ?= $(PREFIX)/share

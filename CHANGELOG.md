@@ -5,6 +5,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-12
+
 ### Added
 - Sharp on HiDPI screens: renders at the monitor's real pixel density, including fractional
   scaling (wp-fractional-scale-v1).
@@ -23,6 +25,9 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Settings window: shows a Start button when the wallpaper is on but not running, retries when it
   is switched back on while still shutting down, asks for a picture before switching on, and keeps
   at least one monitor visible.
+
+### Fixed
+- Crash when monitors were added or removed during a crossfade.
 
 ## [0.2.1] - 2026-10-11
 
@@ -63,7 +68,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Monitor hotplug support and a per-monitor `outputs` filter.
 - Flatpak bundle and Linux binary on every GitHub release.
 
-[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Casper-RS/driftpaper/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Casper-RS/driftpaper/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Casper-RS/driftpaper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Casper-RS/driftpaper/releases/tag/v0.1.0
