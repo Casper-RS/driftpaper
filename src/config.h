@@ -69,6 +69,10 @@ struct config {
     int music_badge;
     float music_sensitivity;
     char music_source[256];
+    float music_size, music_brightness, music_shadow;
+    int music_bars;
+    int music_colors_auto;
+    float music_colors[2][3];
 };
 
 void config_defaults(struct config *c);

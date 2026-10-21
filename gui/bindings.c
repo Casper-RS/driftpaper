@@ -30,11 +30,21 @@ void bindings_init(void (*on_change)(void)) {
     changed_callback = on_change;
 }
 
+static gboolean condition_holds(const struct sensitivity *s) {
+    gboolean matches = *s->flag == s->value;
+    return s->enable_on_match ? matches : !matches;
+}
+
+// A widget with several conditions is enabled only while all of them hold.
 static void update_sensitivity(void) {
     for (guint i = 0; i < sensitivities->len; i++) {
         struct sensitivity *s = g_ptr_array_index(sensitivities, i);
-        gboolean matches = *s->flag == s->value;
-        gtk_widget_set_sensitive(s->widget, s->enable_on_match ? matches : !matches);
+        gboolean enabled = TRUE;
+        for (guint j = 0; j < sensitivities->len && enabled; j++) {
+            const struct sensitivity *other = g_ptr_array_index(sensitivities, j);
+            if (other->widget == s->widget) enabled = condition_holds(other);
+        }
+        gtk_widget_set_sensitive(s->widget, enabled);
     }
 }
 

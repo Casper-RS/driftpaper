@@ -61,6 +61,9 @@ void config_defaults(struct config *c) {
     c->music_badge = 1;
     c->music_sensitivity = 1;
     snprintf(c->music_source, sizeof c->music_source, "default");
+    c->music_size = 1; c->music_brightness = 1; c->music_shadow = 0.4f;
+    c->music_bars = 72;
+    c->music_colors_auto = 1;
 }
 
 static char *trim(char *s) {
@@ -223,6 +226,8 @@ int config_set(struct config *c, const char *key, const char *value, const char 
         {"ellipse", &c->ellipse, 0.1f, 10}, {"white", &c->white, 0, 1}, {"fog", &c->fog, 0, 5}, {"glow", &c->glow, 0, 10},
         {"pulse", &c->pulse, 0, 20}, {"brightness", &c->brightness, -1, 1}, {"contrast", &c->contrast, 0, 4},
         {"saturation", &c->saturation, 0, 4}, {"music_sensitivity", &c->music_sensitivity, 0.1f, 5},
+        {"music_size", &c->music_size, 0.5f, 2}, {"music_brightness", &c->music_brightness, 0, 3},
+        {"music_shadow", &c->music_shadow, 0, 1},
     };
     for (size_t i = 0; i < sizeof nums / sizeof nums[0]; i++) {
         if (strcmp(key, nums[i].k)) continue;
@@ -271,6 +276,22 @@ int config_set(struct config *c, const char *key, const char *value, const char 
     if (!strcmp(key, "music_style")) {
         if ((e = parse_enum(v, music_style_names, 3)) < 0) return bad(where, key, v, "ring, wave or glow");
         c->music_style = e; return 0;
+    }
+    if (!strcmp(key, "music_bars")) {
+        if (parse_float(v, &f) || f < 24 || f > 144) return bad(where, key, v, "24-144");
+        c->music_bars = (int)f; return 0;
+    }
+    if (!strcmp(key, "music_colors")) {
+        if (is_auto(v)) { c->music_colors_auto = 1; return 0; }
+        int n = 0; float cols[2][3];
+        for (char *save, *tok = strtok_r(v, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            if (n == 2 || parse_color(trim(tok), cols[n])) return bad(where, key, tok, "auto or one or two #rrggbb");
+            n++;
+        }
+        if (!n) return bad(where, key, v, "auto or one or two #rrggbb");
+        if (n == 1) memcpy(cols[1], cols[0], sizeof cols[1]);
+        memcpy(c->music_colors, cols, sizeof cols); c->music_colors_auto = 0;
+        return 0;
     }
     if (!strcmp(key, "music_source")) {
         if (!*v || strlen(v) >= sizeof c->music_source) return bad(where, key, v, "default or a source name");
@@ -426,6 +447,11 @@ void config_print(const struct config *c, FILE *f) {
     fprintf(f, "music = %s\nmusic_style = %s\n", c->music ? "true" : "false", music_style_names[c->music_style]);
     fprintf(f, "music_badge = %s\nmusic_sensitivity = %g\nmusic_source = %s\n", c->music_badge ? "true" : "false",
             c->music_sensitivity, c->music_source);
+    fprintf(f, "music_size = %g\nmusic_brightness = %g\nmusic_shadow = %g\nmusic_bars = %d\nmusic_colors = ",
+            c->music_size, c->music_brightness, c->music_shadow, c->music_bars);
+    if (c->music_colors_auto) fprintf(f, "auto");
+    else { print_color(f, c->music_colors[0]); fprintf(f, ", "); print_color(f, c->music_colors[1]); }
+    fprintf(f, "\n");
 }
 
 void config_list_presets(FILE *f) {

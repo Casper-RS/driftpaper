@@ -187,7 +187,7 @@ static const char *PARTICLE_FS = FRAGMENT_PRECISION
 // Bands are mirrored so the picture stays symmetric: bass at the bottom of the ring and in the
 // middle of the wave. Colours come out premultiplied: the badge's dark disc has alpha, glow has none.
 static const char *MUSIC_FS = FRAGMENT_PRECISION
-    "uniform float mode, time, aspect, radius, beat, bass, presence, opacity;\n"
+    "uniform float mode, time, aspect, radius, beat, bass, presence, opacity, size, bars, shadow, gain;\n"
     "uniform float bands[16];\n"
     "uniform vec2 resolution, center;\n"
     "uniform vec3 color_a, color_b, badge;\n"
@@ -207,7 +207,7 @@ static const char *MUSIC_FS = FRAGMENT_PRECISION
     "    float d = length(offset), angle = atan(offset.x, offset.y);\n"
     "    float x = abs(angle) / 3.14159265 * 15.0, v = band(x);\n"
     "    float reach = radius * 0.35, tip = radius + reach * v;\n"
-    "    float slot = fract(angle / 6.2831853 * 72.0);\n"
+    "    float slot = fract(angle / 6.2831853 * bars);\n"
     "    float bar = smoothstep(0.12, 0.22, slot) * smoothstep(0.88, 0.78, slot) * step(radius, d) * step(d, tip);\n"
     "    float rise = clamp((d - radius) / max(reach, 0.001), 0.0, 1.0);\n"
     "    float ripple_at = radius + (1.0 - beat) * radius * 0.45;\n"
@@ -217,13 +217,13 @@ static const char *MUSIC_FS = FRAGMENT_PRECISION
     "               + c * line(d - radius, 1.4 * px) * 0.55\n"
     "               + c * exp(-abs(d - ripple_at) / (5.0 * px)) * beat * beat * 0.7;\n"
     "    // A soft dark band behind the bars keeps them readable on bright pictures.\n"
-    "    float shade = 0.4 * smoothstep(radius * 0.75, radius * 0.95, d) * (1.0 - smoothstep(tip, tip + 0.05, d));\n"
+    "    float shade = shadow * smoothstep(radius * 0.75, radius * 0.95, d) * (1.0 - smoothstep(tip, tip + radius * 0.45, d));\n"
     "    return vec4(light, shade);\n"
     "}\n"
     "\n"
     "vec4 wave(vec2 screen, float px) {\n"
     "    float x = abs(screen.x - 0.5) * 2.0 * 15.0, v = band(x);\n"
-    "    float y = 1.0 - screen.y, crest = 0.07 + 0.11 * v, echo = 0.07 + 0.07 * band(x * 0.8 + 2.0);\n"
+    "    float y = 1.0 - screen.y, crest = (0.07 + 0.11 * v) * size, echo = (0.07 + 0.07 * band(x * 0.8 + 2.0)) * size;\n"
     "    float column = fract(screen.x * resolution.x / (9.0 * px * resolution.y));\n"
     "    float columns = smoothstep(0.1, 0.25, column) * smoothstep(0.9, 0.75, column);\n"
     "    float below = step(y, crest) * pow(clamp(y / crest, 0.0, 1.0), 2.0);\n"
@@ -265,7 +265,7 @@ static const char *MUSIC_FS = FRAGMENT_PRECISION
     "        c = mode < 0.5 ? ring(canvas * vec2(aspect, 1.0), px) : wave(screen, 1.0 / resolution.y);\n"
     "        c *= presence;\n"
     "    }\n"
-    "    gl_FragColor = c * opacity;\n"
+    "    gl_FragColor = vec4(c.rgb * gain, c.a) * opacity;\n"
     "}\n";
 
 static GLuint compile_shader(GLenum type, const char *source) {
@@ -340,6 +340,8 @@ static void find_uniforms(struct renderer *r) {
         .bass = glGetUniformLocation(p, "bass"), .presence = glGetUniformLocation(p, "presence"),
         .color_a = glGetUniformLocation(p, "color_a"), .color_b = glGetUniformLocation(p, "color_b"),
         .badge = glGetUniformLocation(p, "badge"), .opacity = glGetUniformLocation(p, "opacity"),
+        .size = glGetUniformLocation(p, "size"), .bars = glGetUniformLocation(p, "bars"),
+        .shadow = glGetUniformLocation(p, "shadow"), .gain = glGetUniformLocation(p, "gain"),
     };
 }
 
@@ -681,7 +683,7 @@ void render_music(const struct renderer *r, const struct scene *s, int width, in
     float bands[MUSIC_BANDS];
     for (int i = 0; i < MUSIC_BANDS; i++) bands[i] = fminf(1.2f, m->bands[i] * cfg->music_sensitivity);
     // The ring sits in the middle of the canvas: detected subjects are often off-centre or too large.
-    float radius = RING_RADIUS, center[2] = {v.aspect * 0.5f, 0.5f};
+    float radius = RING_RADIUS * cfg->music_size, center[2] = {v.aspect * 0.5f, 0.5f};
 
     glViewport(0, 0, width, height);
     glEnable(GL_BLEND);
@@ -698,8 +700,12 @@ void render_music(const struct renderer *r, const struct scene *s, int width, in
     glUniform1f(u->beat, m->beat);
     glUniform1f(u->bass, fminf(1, m->bass * cfg->music_sensitivity));
     glUniform1f(u->presence, m->presence);
-    glUniform3fv(u->color_a, 1, s->glow_a);
-    glUniform3fv(u->color_b, 1, s->glow_b);
+    glUniform3fv(u->color_a, 1, cfg->music_colors_auto ? s->glow_a : cfg->music_colors[0]);
+    glUniform3fv(u->color_b, 1, cfg->music_colors_auto ? s->glow_b : cfg->music_colors[1]);
+    glUniform1f(u->size, cfg->music_size);
+    glUniform1f(u->bars, cfg->music_bars);
+    glUniform1f(u->shadow, cfg->music_shadow);
+    glUniform1f(u->gain, cfg->music_brightness);
     glUniform1f(u->opacity, opacity);
     glBindBuffer(GL_ARRAY_BUFFER, r->triangle_vbo);
     glEnableVertexAttribArray(0);
@@ -708,15 +714,16 @@ void render_music(const struct renderer *r, const struct scene *s, int width, in
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
     if (m->presence > 0.01f && cfg->music_style == MUSIC_RING) {
-        // The bars reach 0.4 radius out and the beat ripple 0.45; a little more leaves room for the glow.
-        float reach = radius * 1.5f + 0.02f;
+        // The bars reach 0.42 radius out and the shadow fades out 0.45 radius beyond them.
+        float reach = radius * 1.9f + 0.02f;
         float cx = (0.5f - viewport.x) / viewport.width * width;
         float cy = (0.5f - viewport.y) / viewport.height * height;
         float rx = reach / v.aspect / viewport.width * width, ry = reach / viewport.height * height;
         scissor_to(width, height, cx - rx, cy - ry, cx + rx, cy + ry);
         draw_music_pass(u, 0);
     } else if (m->presence > 0.01f && cfg->music_style == MUSIC_WAVE) {
-        scissor_to(width, height, 0, height * 0.75f, width, height);
+        // The crest peaks near 0.2 of the height at size 1; leave room for its glow.
+        scissor_to(width, height, 0, height * fmaxf(0, 1 - 0.25f * cfg->music_size), width, height);
         draw_music_pass(u, 1);
     }
     if (badge) {

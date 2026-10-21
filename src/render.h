@@ -19,6 +19,7 @@ struct particle_uniforms {
 
 struct music_uniforms {
     GLint mode, time, aspect, resolution, viewport, center, radius, bands, beat, bass, presence, color_a, color_b, badge, opacity;
+    GLint size, bars, shadow, gain;
 };
 
 struct image {

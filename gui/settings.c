@@ -91,6 +91,12 @@ static void use_detected_colors(void) {
         ui.cfg.n_colors = n;
     }
     if (ui.cfg.glow_auto) memcpy(ui.cfg.glow_color, ui.analysis.palette[0], sizeof ui.cfg.glow_color);
+    if (ui.cfg.music_colors_auto) {
+        // The same two colours the wallpaper takes from the glow.
+        int second = ui.cfg.glow_auto && ui.analysis.n_palette > 1;
+        memcpy(ui.cfg.music_colors[0], ui.cfg.glow_color, sizeof ui.cfg.music_colors[0]);
+        memcpy(ui.cfg.music_colors[1], second ? ui.analysis.palette[1] : ui.cfg.glow_color, sizeof ui.cfg.music_colors[1]);
+    }
 }
 
 static int monitor_shown(const char *connector) {
@@ -249,6 +255,12 @@ static void on_preset_selected(GObject *row, GParamSpec *pspec, gpointer data) {
     fresh.music_badge = current->music_badge;
     fresh.music_sensitivity = current->music_sensitivity;
     memcpy(fresh.music_source, current->music_source, sizeof fresh.music_source);
+    fresh.music_size = current->music_size;
+    fresh.music_brightness = current->music_brightness;
+    fresh.music_shadow = current->music_shadow;
+    fresh.music_bars = current->music_bars;
+    fresh.music_colors_auto = current->music_colors_auto;
+    memcpy(fresh.music_colors, current->music_colors, sizeof fresh.music_colors);
     ui.cfg = fresh;
 
     use_detected_colors();
@@ -666,6 +678,24 @@ static GtkWidget *build_music_page(void) {
                                         0.1, 5, 0.1, 1);
     GtkWidget *music_only[] = {style, badge, sensitivity};
     for (size_t i = 0; i < G_N_ELEMENTS(music_only); i++) bind_enable_only_when(music_only[i], &c->music, 1);
+
+    AdwPreferencesGroup *look = add_group(page, "Look", "How the ring, wave and badge are drawn.");
+    GtkWidget *size = bind_float(look, "Size", "Ring size and wave height", &c->music_size, 0.5, 2, 0.05, 2);
+    GtkWidget *brightness = bind_float(look, "Brightness", NULL, &c->music_brightness, 0, 3, 0.05, 2);
+    GtkWidget *bars = bind_int(look, "Bars", "Number of bars around the ring", &c->music_bars, 24, 144, 4);
+    GtkWidget *shadow = bind_float(look, "Shadow behind the ring", "Keeps the bars readable on bright pictures",
+                                   &c->music_shadow, 0, 1, 0.05, 2);
+    GtkWidget *colors_auto = bind_bool(look, "Colours from the glow", NULL, &c->music_colors_auto);
+    GtkWidget *colors = adw_action_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(colors), "Colours");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(colors), "Bass, then treble");
+    for (int i = 0; i < 2; i++) adw_action_row_add_suffix(ADW_ACTION_ROW(colors), bind_color(c->music_colors[i]));
+    adw_preferences_group_add(look, colors);
+    bind_disable_when(colors, &c->music_colors_auto, 1);
+    GtkWidget *look_rows[] = {size, brightness, bars, shadow, colors_auto, colors};
+    for (size_t i = 0; i < G_N_ELEMENTS(look_rows); i++) bind_enable_only_when(look_rows[i], &c->music, 1);
+    bind_enable_only_when(bars, (int *)&c->music_style, MUSIC_RING);
+    bind_enable_only_when(shadow, (int *)&c->music_style, MUSIC_RING);
     return GTK_WIDGET(page);
 }
 

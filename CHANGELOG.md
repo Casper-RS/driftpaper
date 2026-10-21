@@ -13,6 +13,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
   along the bottom (`wave`), and a small equaliser badge in the bottom-right corner
   (`music_badge`). It listens to the speakers through PulseAudio or PipeWire; libpulse is loaded
   only when music sync is on.
+- A Look group on the Music page (`music_size`, `music_brightness`, `music_bars`, `music_shadow`,
+  `music_colors`) to change the visualiser's size, brightness, number of bars, shadow and colours.
 
 ### Fixed
 - The animation froze after login when COSMIC's own background program started on top of it.

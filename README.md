@@ -146,6 +146,10 @@ for lock screens); add `--with-music` to preview it on a sample song. Listening 
 To listen to something other than the speakers, set `music_source` to a source name from
 `pactl list short sources`.
 
+The **Look** group on the Music page changes how the visualiser is drawn: its size, brightness,
+the number of bars around the ring, the dark shadow behind the ring, and its colours (by default
+the two glow colours, from bass to treble).
+
 ## Configuration
 
 Settings live in `~/.config/driftpaper/config.ini`. [`examples/config.ini`](examples/config.ini)
@@ -176,6 +180,11 @@ lists every setting with an explanation. The most useful ones:
 | `music_style` | `ring`, `wave`, `glow` | How the music is shown |
 | `music_badge` | `true`, `false` | Equaliser badge in the bottom-right corner |
 | `music_sensitivity` | 0.1-5 | How strongly the look reacts |
+| `music_size` | 0.5-2 | Ring size and wave height |
+| `music_brightness` | 0-3 | Brightness of the ring, wave and badge |
+| `music_bars` | 24-144 | Number of bars around the ring |
+| `music_shadow` | 0-1 | Dark band behind the ring for bright pictures |
+| `music_colors` | `auto` or `#rrggbb, #rrggbb` | Visualiser colours, bass then treble; `auto` uses the glow colours |
 
 ### CPU usage
 
