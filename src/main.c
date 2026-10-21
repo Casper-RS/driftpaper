@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <getopt.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "analyze.h"
@@ -22,6 +23,7 @@ struct options {
     const char *snapshot_path;
     int snapshot_width, snapshot_height;
     float snapshot_time;
+    int snapshot_music;
 };
 
 static void print_usage(FILE *out) {
@@ -40,6 +42,7 @@ static void print_usage(FILE *out) {
             "      --snapshot FILE    render one frame to a PNG (e.g. for the lock screen) and exit\n"
             "      --size WxH         snapshot size (default 2560x1440)\n"
             "      --time SECONDS     animation time of the snapshot (default 20)\n"
+            "      --with-music       show the music visualiser in the snapshot, on a sample song\n"
             "  -h, --help             show this help\n"
             "  -V, --version          show the version\n"
             "\n"
@@ -48,7 +51,7 @@ static void print_usage(FILE *out) {
 }
 
 static int parse_options(int argc, char **argv, struct options *opt) {
-    enum { OPT_PRINT_CONFIG = 256, OPT_ANALYZE, OPT_SNAPSHOT, OPT_SIZE, OPT_TIME };
+    enum { OPT_PRINT_CONFIG = 256, OPT_ANALYZE, OPT_SNAPSHOT, OPT_SIZE, OPT_TIME, OPT_WITH_MUSIC };
     static const struct option long_options[] = {
         {"config", required_argument, 0, 'c'},
         {"preset", required_argument, 0, 'p'},
@@ -59,6 +62,7 @@ static int parse_options(int argc, char **argv, struct options *opt) {
         {"snapshot", required_argument, 0, OPT_SNAPSHOT},
         {"size", required_argument, 0, OPT_SIZE},
         {"time", required_argument, 0, OPT_TIME},
+        {"with-music", no_argument, 0, OPT_WITH_MUSIC},
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0},
@@ -105,6 +109,13 @@ static int parse_options(int argc, char **argv, struct options *opt) {
             break;
         case OPT_TIME:
             opt->snapshot_time = strtof(optarg, NULL);
+            if (!isfinite(opt->snapshot_time) || opt->snapshot_time < 0) {
+                fprintf(stderr, "driftpaper: --time expects a number of seconds\n");
+                return 2;
+            }
+            break;
+        case OPT_WITH_MUSIC:
+            opt->snapshot_music = 1;
             break;
         case 'h':
             print_usage(stdout);
@@ -170,7 +181,9 @@ int main(int argc, char **argv) {
     egl_select_renderer(cfg.renderer);
     switch (opt.mode) {
     case MODE_ANALYZE: return print_analysis(&cfg);
-    case MODE_SNAPSHOT: return snapshot_write(&cfg, opt.snapshot_path, opt.snapshot_width, opt.snapshot_height, opt.snapshot_time);
+    case MODE_SNAPSHOT:
+        return snapshot_write(&cfg, opt.snapshot_path, opt.snapshot_width, opt.snapshot_height, opt.snapshot_time,
+                              opt.snapshot_music);
     default: return wallpaper_run(&opt.src, &cfg);
     }
 }

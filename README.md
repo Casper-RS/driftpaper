@@ -24,6 +24,9 @@ breathing glow around it. It uses well under 1% of one CPU core on a GPU.
 - **Sharp on HiDPI** screens, including fractional scaling.
 - **Smooth crossfade** when you change the picture or look.
 - **Lock screen sync on COSMIC:** the lock and login screens show a matching still.
+- **Music sync:** the glow and particles pulse on the beat, with an equaliser ring in the middle of the
+  screen or a glowing wave along the bottom, plus a small equaliser badge in the bottom-right
+  corner.
 
 <img src="docs/settings-window.png" width="420" alt="driftpaper settings window">
 
@@ -126,6 +129,23 @@ Elsewhere, use **Export…** in the settings window, or:
 driftpaper --snapshot ~/Pictures/driftpaper-lock.png --size 2560x1440
 ```
 
+### Music sync
+
+Switch on **React to music** on the Music page (or `music = true`). driftpaper listens to what
+your speakers play through PulseAudio or PipeWire (`pipewire-pulse`), so it reacts to any player,
+browser or game. It finds the beat in the bass and splits the sound into 16 bands from 40 Hz to 5 kHz.
+
+- `music_style = ring`: equaliser bars in the middle of the screen, with a ripple on each beat.
+- `music_style = wave`: a glowing, mirrored spectrum along the bottom of the screen.
+- `music_style = glow`: only the glow and particles pulse.
+- `music_badge = true`: a small round equaliser in the bottom-right corner of the desktop. While
+  nothing plays it shows resting dots.
+
+The visualiser fades out a moment after the sound stops. Snapshots leave it out (they are meant
+for lock screens); add `--with-music` to preview it on a sample song. Listening costs about 0.3% of one core.
+To listen to something other than the speakers, set `music_source` to a source name from
+`pactl list short sources`.
+
 ## Configuration
 
 Settings live in `~/.config/driftpaper/config.ini`. [`examples/config.ini`](examples/config.ini)
@@ -152,6 +172,10 @@ lists every setting with an explanation. The most useful ones:
 | `image.<monitor>` | path | A different picture for one monitor, e.g. `image.DP-2` |
 | `span` | `true`, `false` | Stretch the main picture across all monitors |
 | `lock_screen_sync` | `true`, `false` | COSMIC: keep the lock and login screens matching |
+| `music` | `true`, `false` | React to the music that is playing |
+| `music_style` | `ring`, `wave`, `glow` | How the music is shown |
+| `music_badge` | `true`, `false` | Equaliser badge in the bottom-right corner |
+| `music_sensitivity` | 0.1-5 | How strongly the look reacts |
 
 ### CPU usage
 
@@ -178,6 +202,7 @@ src/snapshot.c    offscreen rendering to PNG
 src/egl.c         EGL setup and renderer selection
 src/runtime.c     single-instance lock, takeover and Wayland socket discovery
 src/lockscreen.c  COSMIC lock screen sync
+src/music.c       music sync: audio capture, spectrum and beat detection
 gui/settings.c    settings window (GTK 4 + libadwaita)
 gui/bindings.c    rows that edit config fields in place
 ```

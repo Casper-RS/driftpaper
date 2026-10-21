@@ -1,4 +1,4 @@
-VERSION   ?= 0.3.0
+VERSION   ?= 1.0.0
 PREFIX    ?= /usr/local
 BINDIR    ?= $(PREFIX)/bin
 DATADIR   ?= $(PREFIX)/share
@@ -34,7 +34,7 @@ ifneq ($(HAVE_GUI),yes)
 endif
 
 driftpaper: $(OBJ)
-	$(CC) $(LDFLAGS) -o $@ $^ $(WL_LIBS) $(EGL_LIBS) -lm
+	$(CC) $(LDFLAGS) -pthread -o $@ $^ $(WL_LIBS) $(EGL_LIBS) -lm -ldl
 
 driftpaper-settings: $(GUI_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(GUI_LIBS) -lm

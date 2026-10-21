@@ -1,4 +1,5 @@
 #pragma once
+#include <sys/types.h>
 #include <time.h>
 
 // Sandboxes such as Flatpak may hide WAYLAND_DISPLAY while still exposing the compositor's
@@ -15,3 +16,8 @@ int runtime_wallpaper_running(void);
 int runtime_take_over(void);
 // True when another wallpaper asked to take over after `since` (CLOCK_REALTIME).
 int runtime_takeover_requested(struct timespec since);
+
+// Process id of COSMIC's own wallpaper program (cosmic-bg), or 0 when it is not running or not
+// visible (e.g. from inside a Flatpak sandbox). `known` is the previous answer: checking it first
+// keeps the usual case to one small file read instead of a scan of /proc.
+pid_t runtime_cosmic_bg_pid(pid_t known);

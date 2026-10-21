@@ -16,6 +16,8 @@ finish-args:
   # Lock screen sync on COSMIC: still images plus COSMIC's background config.
   - --filesystem=xdg-data/driftpaper:create
   - --filesystem=xdg-config/cosmic/com.system76.CosmicBackground:create
+  # Music sync listens to what the speakers play.
+  - --socket=pulseaudio
 modules:
   - name: driftpaper
     buildsystem: simple

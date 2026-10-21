@@ -2,6 +2,7 @@
 #include "config.h"
 #include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -11,6 +12,7 @@ static const char *dist_names[] = {"even", "outer", "inner"};
 static const char *dir_names[] = {"both", "cw", "ccw"};
 static const char *scale_names[] = {"fill", "fit", "stretch"};
 static const char *renderer_names[] = {"auto", "gpu", "cpu"};
+static const char *music_style_names[] = {"ring", "wave", "glow"};
 
 static const struct { const char *name, *desc, *body; } presets[] = {
     {"shards", "orbiting triangles, squares and sparks around the subject (default)", ""},
@@ -55,6 +57,10 @@ void config_defaults(struct config *c) {
     c->fog = 0.3f; c->glow = 1; c->pulse = 1;
     c->contrast = 1; c->saturation = 1;
     c->hue_center = 220; c->hue_width = 40;
+    c->music_style = MUSIC_RING;
+    c->music_badge = 1;
+    c->music_sensitivity = 1;
+    snprintf(c->music_source, sizeof c->music_source, "default");
 }
 
 static char *trim(char *s) {
@@ -72,7 +78,7 @@ static int bad(const char *where, const char *key, const char *value, const char
 static int parse_float(const char *s, float *out) {
     char *end; errno = 0;
     float v = strtof(s, &end);
-    if (end == s || errno) return -1;
+    if (end == s || errno || !isfinite(v)) return -1;
     while (isspace((unsigned char)*end)) end++;
     if (*end) return -1;
     *out = v; return 0;
@@ -80,6 +86,7 @@ static int parse_float(const char *s, float *out) {
 
 static int parse_range(const char *s, float *lo, float *hi) {
     char buf[64]; snprintf(buf, sizeof buf, "%s", s);
+    if (!buf[0]) return -1;
     char *sep = strpbrk(buf + 1, "-,");
     if (!sep) { if (parse_float(buf, lo)) return -1; *hi = *lo; return 0; }
     *sep = 0;
@@ -96,7 +103,7 @@ static int parse_enum(const char *s, const char **names, int n) {
 static int parse_color(const char *s, float rgb[3]) {
     if (*s == '#') s++;
     unsigned v;
-    if (strlen(s) != 6 || sscanf(s, "%6x", &v) != 1) return -1;
+    if (strlen(s) != 6 || strspn(s, "0123456789abcdefABCDEF") != 6 || sscanf(s, "%6x", &v) != 1) return -1;
     rgb[0] = ((v >> 16) & 255) / 255.0f; rgb[1] = ((v >> 8) & 255) / 255.0f; rgb[2] = (v & 255) / 255.0f;
     return 0;
 }
@@ -215,7 +222,7 @@ int config_set(struct config *c, const char *key, const char *value, const char 
         {"twinkle", &c->twinkle, 0, 1}, {"breathe", &c->breathe, 0, 500}, {"outer_radius", &c->outer_radius, 0, 10},
         {"ellipse", &c->ellipse, 0.1f, 10}, {"white", &c->white, 0, 1}, {"fog", &c->fog, 0, 5}, {"glow", &c->glow, 0, 10},
         {"pulse", &c->pulse, 0, 20}, {"brightness", &c->brightness, -1, 1}, {"contrast", &c->contrast, 0, 4},
-        {"saturation", &c->saturation, 0, 4},
+        {"saturation", &c->saturation, 0, 4}, {"music_sensitivity", &c->music_sensitivity, 0.1f, 5},
     };
     for (size_t i = 0; i < sizeof nums / sizeof nums[0]; i++) {
         if (strcmp(key, nums[i].k)) continue;
@@ -226,7 +233,7 @@ int config_set(struct config *c, const char *key, const char *value, const char 
         *nums[i].p = f; return 0;
     }
     if (!strcmp(key, "seed")) {
-        if (parse_float(v, &f)) return bad(where, key, v, "a number");
+        if (parse_float(v, &f) || f < 0 || f >= 4294967296.0f) return bad(where, key, v, "a whole number from 0 to 4294967295");
         c->seed = (unsigned)f; return 0;
     }
     if (!strcmp(key, "distribution")) {
@@ -244,7 +251,7 @@ int config_set(struct config *c, const char *key, const char *value, const char 
     }
     if (!strcmp(key, "center")) {
         if (is_auto(v)) { c->center_auto = 1; return 0; }
-        if (sscanf(v, "%f , %f", &f, &g) != 2) return bad(where, key, v, "auto or x,y");
+        if (sscanf(v, "%f , %f", &f, &g) != 2 || !isfinite(f) || !isfinite(g)) return bad(where, key, v, "auto or x,y");
         c->center_auto = 0; c->center_x = f; c->center_y = g; return 0;
     }
     if (!strcmp(key, "colors")) {
@@ -257,6 +264,17 @@ int config_set(struct config *c, const char *key, const char *value, const char 
         }
         if (!n) return bad(where, key, v, "auto or #rrggbb, ...");
         memcpy(c->colors, cols, sizeof cols); c->n_colors = n; c->colors_auto = 0;
+        return 0;
+    }
+    if (!strcmp(key, "music")) return parse_bool(v, &c->music) ? bad(where, key, v, "true or false") : 0;
+    if (!strcmp(key, "music_badge")) return parse_bool(v, &c->music_badge) ? bad(where, key, v, "true or false") : 0;
+    if (!strcmp(key, "music_style")) {
+        if ((e = parse_enum(v, music_style_names, 3)) < 0) return bad(where, key, v, "ring, wave or glow");
+        c->music_style = e; return 0;
+    }
+    if (!strcmp(key, "music_source")) {
+        if (!*v || strlen(v) >= sizeof c->music_source) return bad(where, key, v, "default or a source name");
+        snprintf(c->music_source, sizeof c->music_source, "%s", v);
         return 0;
     }
     if (!strcmp(key, "scale")) {
@@ -274,8 +292,11 @@ int config_set(struct config *c, const char *key, const char *value, const char 
     }
     if (!strcmp(key, "hue_adjust")) {
         if (!strcasecmp(v, "off")) { c->hue_lightness = 0; return 0; }
-        if (sscanf(v, "%f , %f , %f", &c->hue_center, &c->hue_width, &c->hue_lightness) != 3)
+        float hue, width, lightness;
+        if (sscanf(v, "%f , %f , %f", &hue, &width, &lightness) != 3 || !isfinite(hue) || !isfinite(width) ||
+            !isfinite(lightness))
             return bad(where, key, v, "off or hue,width,lightness (e.g. 220,40,-0.2)");
+        c->hue_center = hue; c->hue_width = width; c->hue_lightness = lightness;
         return 0;
     }
     fprintf(stderr, "driftpaper: %s: unknown setting '%s'\n", where, key);
@@ -401,6 +422,10 @@ void config_print(const struct config *c, FILE *f) {
     fprintf(f, "\npulse = %g\nbrightness = %g\ncontrast = %g\nsaturation = %g\n", c->pulse, c->brightness, c->contrast, c->saturation);
     if (c->hue_lightness == 0) fprintf(f, "hue_adjust = off\n");
     else fprintf(f, "hue_adjust = %g, %g, %g\n", c->hue_center, c->hue_width, c->hue_lightness);
+    fprintf(f, "\n[music]\n");
+    fprintf(f, "music = %s\nmusic_style = %s\n", c->music ? "true" : "false", music_style_names[c->music_style]);
+    fprintf(f, "music_badge = %s\nmusic_sensitivity = %g\nmusic_source = %s\n", c->music_badge ? "true" : "false",
+            c->music_sensitivity, c->music_source);
 }
 
 void config_list_presets(FILE *f) {

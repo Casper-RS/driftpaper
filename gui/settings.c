@@ -60,8 +60,11 @@ static void write_config(void) {
     }
     fprintf(f, "# Written by driftpaper settings. All options: examples/config.ini in the source.\n\n");
     config_print(&ui.cfg, f);
-    fclose(f);
-    rename(temp, path);
+    // A full disk must not replace good settings with a cut-off file.
+    if (ferror(f) | fclose(f) || rename(temp, path)) {
+        g_unlink(temp);
+        toast("Could not save the settings");
+    }
 }
 
 static gboolean save_now(gpointer data) {
@@ -241,6 +244,11 @@ static void on_preset_selected(GObject *row, GParamSpec *pspec, gpointer data) {
     fresh.n_output_images = current->n_output_images;
     fresh.span = current->span;
     fresh.lock_screen_sync = current->lock_screen_sync;
+    fresh.music = current->music;
+    fresh.music_style = current->music_style;
+    fresh.music_badge = current->music_badge;
+    fresh.music_sensitivity = current->music_sensitivity;
+    memcpy(fresh.music_source, current->music_source, sizeof fresh.music_source);
     ui.cfg = fresh;
 
     use_detected_colors();
@@ -645,6 +653,22 @@ static GtkWidget *build_background_page(void) {
     return GTK_WIDGET(page);
 }
 
+static GtkWidget *build_music_page(void) {
+    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    struct config *c = &ui.cfg;
+
+    AdwPreferencesGroup *music = add_group(page, "Music", "The wallpaper moves to whatever your speakers play.");
+    bind_bool(music, "React to music", "Glow and particles pulse on the beat", &c->music);
+    static const char *styles[] = {"Equaliser ring in the middle", "Wave along the bottom", "Only glow and particles", NULL};
+    GtkWidget *style = bind_enum(music, "Visualiser", NULL, (int *)&c->music_style, styles);
+    GtkWidget *badge = bind_bool(music, "Equaliser badge", "A small round equaliser in the bottom-right corner", &c->music_badge);
+    GtkWidget *sensitivity = bind_float(music, "Sensitivity", "Higher values react more strongly", &c->music_sensitivity,
+                                        0.1, 5, 0.1, 1);
+    GtkWidget *music_only[] = {style, badge, sensitivity};
+    for (size_t i = 0; i < G_N_ELEMENTS(music_only); i++) bind_enable_only_when(music_only[i], &c->music, 1);
+    return GTK_WIDGET(page);
+}
+
 static gboolean on_close_request(GtkWindow *window, gpointer data) {
     flush_save();
     return FALSE;
@@ -667,6 +691,7 @@ static void on_activate(GtkApplication *app, gpointer data) {
     adw_view_stack_add_titled_with_icon(stack, build_wallpaper_page(), "wallpaper", "Wallpaper", "image-x-generic-symbolic");
     adw_view_stack_add_titled_with_icon(stack, build_particles_page(), "particles", "Particles", "starred-symbolic");
     adw_view_stack_add_titled_with_icon(stack, build_background_page(), "background", "Background", "applications-graphics-symbolic");
+    adw_view_stack_add_titled_with_icon(stack, build_music_page(), "music", "Music", "audio-x-generic-symbolic");
 
     GtkWidget *switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), stack);

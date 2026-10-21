@@ -11,6 +11,7 @@ enum distribution { DIST_EVEN, DIST_OUTER, DIST_INNER };
 enum direction { DIR_BOTH, DIR_CW, DIR_CCW };
 enum scale_mode { SCALE_FILL, SCALE_FIT, SCALE_STRETCH };
 enum renderer_kind { RENDERER_AUTO, RENDERER_GPU, RENDERER_CPU };
+enum music_style { MUSIC_RING, MUSIC_WAVE, MUSIC_GLOW };
 
 extern const char *shape_names[SHAPE_COUNT];
 
@@ -61,6 +62,13 @@ struct config {
     float glow_color[3];
     float brightness, contrast, saturation;
     float hue_center, hue_width, hue_lightness;
+
+    // Music sync: the look reacts to what the speakers play.
+    int music;
+    enum music_style music_style;
+    int music_badge;
+    float music_sensitivity;
+    char music_source[256];
 };
 
 void config_defaults(struct config *c);

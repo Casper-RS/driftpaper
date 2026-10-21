@@ -1,8 +1,11 @@
 #define _GNU_SOURCE
 #include "runtime.h"
+#include <ctype.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -23,7 +26,7 @@ int runtime_find_wayland_display(void) {
     const char *base = getenv("XDG_RUNTIME_DIR");
     if (!base) return -1;
     for (int i = 0; i < 4; i++) {
-        char name[16], path[600];
+        char name[24], path[600];
         snprintf(name, sizeof name, "wayland-%d", i);
         snprintf(path, sizeof path, "%s/%s", base, name);
         struct stat st;
@@ -96,4 +99,25 @@ int runtime_takeover_requested(struct timespec since) {
     if (stat(path, &st) != 0) return 0;
     return st.st_mtim.tv_sec > since.tv_sec ||
            (st.st_mtim.tv_sec == since.tv_sec && st.st_mtim.tv_nsec > since.tv_nsec);
+}
+
+static int is_cosmic_bg(pid_t pid) {
+    char path[64], comm[32] = "";
+    snprintf(path, sizeof path, "/proc/%d/comm", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    if (!fgets(comm, sizeof comm, f)) comm[0] = 0;
+    fclose(f);
+    return !strcmp(comm, "cosmic-bg\n");
+}
+
+pid_t runtime_cosmic_bg_pid(pid_t known) {
+    if (known && is_cosmic_bg(known)) return known;
+    DIR *proc = opendir("/proc");
+    if (!proc) return 0;
+    pid_t found = 0;
+    for (struct dirent *e; !found && (e = readdir(proc));)
+        if (isdigit((unsigned char)e->d_name[0]) && is_cosmic_bg(atoi(e->d_name))) found = atoi(e->d_name);
+    closedir(proc);
+    return found;
 }

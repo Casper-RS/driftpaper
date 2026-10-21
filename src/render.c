@@ -32,7 +32,7 @@ static const char *BACKGROUND_VS =
 static const char *BACKGROUND_FS = FRAGMENT_PRECISION
     "varying vec2 screen;\n"
     "uniform sampler2D tex;\n"
-    "uniform float time, aspect, fit, ellipse, fog, glow, pulse, brightness, contrast, saturation, opacity;\n"
+    "uniform float time, aspect, fit, ellipse, fog, glow, pulse, brightness, contrast, saturation, opacity, music;\n"
     "uniform vec2 resolution, uv_scale, center, glow_falloff;\n"
     "uniform vec4 viewport;\n"
     "uniform vec3 letterbox, fog_a, fog_b, glow_a, glow_b, hue_adjust;\n"
@@ -70,7 +70,7 @@ static const char *BACKGROUND_FS = FRAGMENT_PRECISION
     "\n"
     "vec3 breathing_glow(float d2) {\n"
     "    float beat = 0.5 + 0.5 * sin(time * 0.6 * pulse);\n"
-    "    return (glow_a * exp(-d2 * glow_falloff.x) * (0.10 + 0.08 * beat)\n"
+    "    return (glow_a * exp(-d2 * glow_falloff.x) * (0.10 + 0.08 * beat + 0.2 * music)\n"
     "          + glow_b * exp(-d2 * glow_falloff.y) * (0.035 + 0.02 * (1.0 - beat))) * glow;\n"
     "}\n"
     "\n"
@@ -92,7 +92,7 @@ static const char *BACKGROUND_FS = FRAGMENT_PRECISION
 // Orbit uses u = angle and v = radius in image heights; the other motions use u, v as a 0..1 position.
 static const char *PARTICLE_VS =
     "attribute vec4 shape, color, motion_params;\n"
-    "uniform float time, aspect, radius_scale, inner, ellipse, motion, breathe, twinkle, opacity;\n"
+    "uniform float time, aspect, radius_scale, inner, ellipse, motion, breathe, twinkle, opacity, music;\n"
     "uniform vec2 resolution, center;\n"
     "uniform vec4 viewport;\n"
     "varying vec4 tint;\n"
@@ -103,7 +103,7 @@ static const char *PARTICLE_VS =
     "\n"
     "vec2 orbit(out float fade) {\n"
     "    float cycle = fract(time * 0.05 + phase() * 0.6667);\n"
-    "    float radius = shape.y * radius_scale + (sin(time * 0.21 + phase()) * 0.47 + (cycle - 0.5) * 2.0) * breathe;\n"
+    "    float radius = shape.y * radius_scale + (sin(time * 0.21 + phase()) * 0.47 + (cycle - 0.5) * 2.0) * breathe + music * 0.012;\n"
     "    fade = breathe > 0.0 ? smoothstep(0.0, 0.15, cycle) * smoothstep(1.0, 0.85, cycle) : 1.0;\n"
     "    float angle = shape.x + time * speed();\n"
     "    return center + vec2(cos(angle) * radius * ellipse, sin(angle) * radius);\n"
@@ -132,11 +132,11 @@ static const char *PARTICLE_VS =
     "    fade *= smoothstep(clear_radius, clear_radius + 0.04, length((p - center) / vec2(ellipse, 1.0)));\n"
     "    float flicker = 1.0 - twinkle + twinkle * sin(time * (0.7 + fract(phase()) * 1.3) + phase() * 6.0);\n"
     "\n"
-    "    tint = vec4(color.rgb, color.a * max(flicker, 0.0) * fade * opacity);\n"
+    "    tint = vec4(color.rgb, min(color.a * (1.0 + 0.6 * music), 1.0) * max(flicker, 0.0) * fade * opacity);\n"
     "    kind = shape.w;\n"
     "    rotation = motion_params.z + time * motion_params.w;\n"
     "    vec2 on_screen = (vec2(p.x / aspect, p.y) - viewport.xy) / viewport.zw;\n"
-    "    gl_PointSize = shape.z * resolution.y / viewport.w / 1440.0;\n"
+    "    gl_PointSize = shape.z * (1.0 + 0.4 * music) * resolution.y / viewport.w / 1440.0;\n"
     "    gl_Position = vec4(on_screen.x * 2.0 - 1.0, 1.0 - on_screen.y * 2.0, 0.0, 1.0);\n"
     "}\n";
 
@@ -180,6 +180,92 @@ static const char *PARTICLE_FS = FRAGMENT_PRECISION
     "    else if (kind < 6.5) alpha = star(p);\n"
     "    else alpha = plus(p);\n"
     "    gl_FragColor = vec4(tint.rgb, tint.a * alpha);\n"
+    "}\n";
+
+// The music visualiser, drawn additively over the finished frame inside a scissor box. mode 0 is a
+// ring of equaliser bars around the subject, 1 a glowing wave along the bottom, 2 the badge.
+// Bands are mirrored so the picture stays symmetric: bass at the bottom of the ring and in the
+// middle of the wave. Colours come out premultiplied: the badge's dark disc has alpha, glow has none.
+static const char *MUSIC_FS = FRAGMENT_PRECISION
+    "uniform float mode, time, aspect, radius, beat, bass, presence, opacity;\n"
+    "uniform float bands[16];\n"
+    "uniform vec2 resolution, center;\n"
+    "uniform vec3 color_a, color_b, badge;\n"
+    "uniform vec4 viewport;\n"
+    "\n"
+    "float band(float x) {\n"
+    "    float v = 0.0;\n"
+    "    for (int i = 0; i < 16; i++) v += bands[i] * (1.0 - smoothstep(0.0, 1.0, abs(x - float(i))));\n"
+    "    return v;\n"
+    "}\n"
+    "\n"
+    "vec3 tint(float x) { return mix(color_a, color_b, clamp(x / 15.0, 0.0, 1.0)); }\n"
+    "float line(float distance, float width) { return 1.0 - smoothstep(0.0, width, abs(distance)); }\n"
+    "\n"
+    "vec4 ring(vec2 p, float px) {\n"
+    "    vec2 offset = p - center;\n"
+    "    float d = length(offset), angle = atan(offset.x, offset.y);\n"
+    "    float x = abs(angle) / 3.14159265 * 15.0, v = band(x);\n"
+    "    float reach = radius * 0.35, tip = radius + reach * v;\n"
+    "    float slot = fract(angle / 6.2831853 * 72.0);\n"
+    "    float bar = smoothstep(0.12, 0.22, slot) * smoothstep(0.88, 0.78, slot) * step(radius, d) * step(d, tip);\n"
+    "    float rise = clamp((d - radius) / max(reach, 0.001), 0.0, 1.0);\n"
+    "    float ripple_at = radius + (1.0 - beat) * radius * 0.45;\n"
+    "    vec3 c = mix(tint(x), vec3(1.0), 0.3);\n"
+    "    vec3 light = c * bar * (0.35 + 0.55 * rise)\n"
+    "               + mix(c, vec3(1.0), 0.5) * (line(d - tip, 1.8 * px) + exp(-abs(d - tip) / (6.0 * px)) * 0.35)\n"
+    "               + c * line(d - radius, 1.4 * px) * 0.55\n"
+    "               + c * exp(-abs(d - ripple_at) / (5.0 * px)) * beat * beat * 0.7;\n"
+    "    // A soft dark band behind the bars keeps them readable on bright pictures.\n"
+    "    float shade = 0.4 * smoothstep(radius * 0.75, radius * 0.95, d) * (1.0 - smoothstep(tip, tip + 0.05, d));\n"
+    "    return vec4(light, shade);\n"
+    "}\n"
+    "\n"
+    "vec4 wave(vec2 screen, float px) {\n"
+    "    float x = abs(screen.x - 0.5) * 2.0 * 15.0, v = band(x);\n"
+    "    float y = 1.0 - screen.y, crest = 0.07 + 0.11 * v, echo = 0.07 + 0.07 * band(x * 0.8 + 2.0);\n"
+    "    float column = fract(screen.x * resolution.x / (9.0 * px * resolution.y));\n"
+    "    float columns = smoothstep(0.1, 0.25, column) * smoothstep(0.9, 0.75, column);\n"
+    "    float below = step(y, crest) * pow(clamp(y / crest, 0.0, 1.0), 2.0);\n"
+    "    vec3 c = tint(x);\n"
+    "    vec3 light = c * below * columns * 0.3\n"
+    "               + mix(c, vec3(1.0), 0.35) * (line(y - crest, 2.0 * px) * 0.9 + exp(-abs(y - crest) / (8.0 * px)) * 0.3)\n"
+    "               + tint(15.0 - x) * line(y - echo, 1.5 * px) * 0.35;\n"
+    "    return vec4(light * (0.75 + 0.5 * beat), 0.0);\n"
+    "}\n"
+    "\n"
+    "float capsule(vec2 q, float half_height, float r) { return length(vec2(q.x, max(abs(q.y) - half_height, 0.0))) - r; }\n"
+    "\n"
+    "vec4 badge_icon(vec2 q, float r) {\n"
+    "    float d = length(q), aa = 1.0;\n"
+    "    float disc = 1.0 - smoothstep(r - aa, r + aa, d);\n"
+    "    float breathing = 0.5 + 0.5 * sin(time * 1.6);\n"
+    "    float alive = presence;\n"
+    "    vec3 light = mix(color_a, vec3(1.0), 0.25) * line(d - r, 1.4) * (0.35 + 0.65 * max(bass, (1.0 - alive) * breathing * 0.4));\n"
+    "    float ripple_at = r + (1.0 - beat) * r * 0.7;\n"
+    "    light += color_a * line(d - ripple_at, 1.6) * beat * beat * (1.0 - smoothstep(r, r * 1.7, d)) * 0.9;\n"
+    "    for (int i = 0; i < 5; i++) {\n"
+    "        float fi = float(i), level = band(abs(fi - 2.0) * 5.0 + 0.5);\n"
+    "        float half_height = r * mix(0.04 + 0.05 * breathing, 0.1 + 0.38 * level, alive);\n"
+    "        float s = capsule(q - vec2((fi - 2.0) * r * 0.27, 0.0), half_height, r * 0.07);\n"
+    "        vec3 c = mix(color_a, color_b, clamp(0.5 + q.y / (r * 1.2), 0.0, 1.0));\n"
+    "        light += mix(c, vec3(1.0), 0.2) * (1.0 - smoothstep(-aa, aa, s)) * (0.55 + 0.45 * alive);\n"
+    "    }\n"
+    "    float shade = disc * 0.5;\n"
+    "    return vec4(vec3(0.02, 0.022, 0.03) * shade + light * disc + light * (1.0 - disc) * 0.6, shade);\n"
+    "}\n"
+    "\n"
+    "void main() {\n"
+    "    vec2 screen = vec2(gl_FragCoord.x / resolution.x, 1.0 - gl_FragCoord.y / resolution.y);\n"
+    "    vec4 c;\n"
+    "    if (mode > 1.5) c = badge_icon(gl_FragCoord.xy - badge.xy, badge.z);\n"
+    "    else {\n"
+    "        float px = viewport.w / resolution.y;\n"
+    "        vec2 canvas = viewport.xy + screen * viewport.zw;\n"
+    "        c = mode < 0.5 ? ring(canvas * vec2(aspect, 1.0), px) : wave(screen, 1.0 / resolution.y);\n"
+    "        c *= presence;\n"
+    "    }\n"
+    "    gl_FragColor = c * opacity;\n"
     "}\n";
 
 static GLuint compile_shader(GLenum type, const char *source) {
@@ -232,7 +318,7 @@ static void find_uniforms(struct renderer *r) {
         .glow = glGetUniformLocation(p, "glow"), .glow_falloff = glGetUniformLocation(p, "glow_falloff"),
         .pulse = glGetUniformLocation(p, "pulse"), .brightness = glGetUniformLocation(p, "brightness"),
         .contrast = glGetUniformLocation(p, "contrast"), .saturation = glGetUniformLocation(p, "saturation"),
-        .hue_adjust = glGetUniformLocation(p, "hue_adjust"),
+        .hue_adjust = glGetUniformLocation(p, "hue_adjust"), .music = glGetUniformLocation(p, "music"),
     };
     p = r->particle_program;
     r->pt = (struct particle_uniforms){
@@ -242,6 +328,18 @@ static void find_uniforms(struct renderer *r) {
         .breathe = glGetUniformLocation(p, "breathe"), .twinkle = glGetUniformLocation(p, "twinkle"),
         .resolution = glGetUniformLocation(p, "resolution"), .center = glGetUniformLocation(p, "center"),
         .viewport = glGetUniformLocation(p, "viewport"), .opacity = glGetUniformLocation(p, "opacity"),
+        .music = glGetUniformLocation(p, "music"),
+    };
+    p = r->music_program;
+    r->mu = (struct music_uniforms){
+        .mode = glGetUniformLocation(p, "mode"), .time = glGetUniformLocation(p, "time"),
+        .aspect = glGetUniformLocation(p, "aspect"), .resolution = glGetUniformLocation(p, "resolution"),
+        .viewport = glGetUniformLocation(p, "viewport"), .center = glGetUniformLocation(p, "center"),
+        .radius = glGetUniformLocation(p, "radius"),
+        .bands = glGetUniformLocation(p, "bands"), .beat = glGetUniformLocation(p, "beat"),
+        .bass = glGetUniformLocation(p, "bass"), .presence = glGetUniformLocation(p, "presence"),
+        .color_a = glGetUniformLocation(p, "color_a"), .color_b = glGetUniformLocation(p, "color_b"),
+        .badge = glGetUniformLocation(p, "badge"), .opacity = glGetUniformLocation(p, "opacity"),
     };
 }
 
@@ -251,7 +349,8 @@ int renderer_init(struct renderer *r) {
     const char *particle_attributes[] = {"shape", "color", "motion_params"};
     r->background_program = link_program(BACKGROUND_VS, BACKGROUND_FS, background_attributes, 1);
     r->particle_program = link_program(PARTICLE_VS, PARTICLE_FS, particle_attributes, 3);
-    if (!r->background_program || !r->particle_program) return -1;
+    r->music_program = link_program(BACKGROUND_VS, MUSIC_FS, background_attributes, 1);
+    if (!r->background_program || !r->particle_program || !r->music_program) return -1;
     find_uniforms(r);
 
     // A single triangle larger than the screen covers it without a diagonal seam.
@@ -463,7 +562,8 @@ static void scaled_color(GLint location, const float *rgb, float factor) {
     glUniform3f(location, rgb[0] * factor, rgb[1] * factor, rgb[2] * factor);
 }
 
-static void draw_background(const struct renderer *r, const struct scene *s, const struct view *v, float time, float opacity) {
+static void draw_background(const struct renderer *r, const struct scene *s, const struct view *v, float time, float opacity,
+                            float pulse) {
     const struct config *cfg = &s->cfg;
     const struct background_uniforms *u = &r->bg;
     float glow_radius = s->inner_radius * v->radius_scale;
@@ -503,6 +603,7 @@ static void draw_background(const struct renderer *r, const struct scene *s, con
     glUniform1f(u->contrast, cfg->contrast);
     glUniform1f(u->saturation, cfg->saturation);
     glUniform3f(u->hue_adjust, cfg->hue_center, cfg->hue_width, cfg->hue_lightness);
+    glUniform1f(u->music, pulse);
 
     glBindBuffer(GL_ARRAY_BUFFER, r->triangle_vbo);
     glEnableVertexAttribArray(0);
@@ -512,7 +613,8 @@ static void draw_background(const struct renderer *r, const struct scene *s, con
     glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
-static void draw_particles(const struct renderer *r, const struct scene *s, const struct view *v, float time, float opacity) {
+static void draw_particles(const struct renderer *r, const struct scene *s, const struct view *v, float time, float opacity,
+                           float pulse) {
     const struct config *cfg = &s->cfg;
     const struct particle_uniforms *u = &r->pt;
 
@@ -528,6 +630,7 @@ static void draw_particles(const struct renderer *r, const struct scene *s, cons
     glUniform1f(u->motion, (float)cfg->motion);
     glUniform1f(u->breathe, cfg->breathe / REFERENCE_HEIGHT);
     glUniform1f(u->twinkle, cfg->twinkle);
+    glUniform1f(u->music, pulse);
     glUniform2f(u->resolution, v->width, v->height);
     glUniform2fv(u->center, 1, v->center);
     glUniform4f(u->viewport, v->viewport.x, v->viewport.y, v->viewport.width, v->viewport.height);
@@ -541,9 +644,87 @@ static void draw_particles(const struct renderer *r, const struct scene *s, cons
 }
 
 void render_draw(const struct renderer *r, const struct scene *s, int width, int height, struct viewport viewport,
-                 float canvas_aspect, float time, float opacity) {
+                 float canvas_aspect, float time, float opacity, float pulse) {
     struct view v = compute_view(s, width, height, viewport, canvas_aspect);
     glViewport(0, 0, width, height);
-    draw_background(r, s, &v, time, opacity);
-    if (s->particle_count > 0) draw_particles(r, s, &v, time, opacity);
+    draw_background(r, s, &v, time, opacity, pulse);
+    if (s->particle_count > 0) draw_particles(r, s, &v, time, opacity, pulse);
+}
+
+float render_music_pulse(const struct config *cfg, const struct music_levels *m) {
+    return fminf(1.5f, m->presence * cfg->music_sensitivity * (0.65f * m->beat + 0.35f * m->bass));
+}
+
+// Scissor boxes are in framebuffer pixels with the origin at the bottom left.
+static void scissor_to(int width, int height, float left, float top, float right, float bottom) {
+    int x0 = (int)fmaxf(0, floorf(left)), x1 = (int)fminf(width, ceilf(right));
+    int y0 = (int)fmaxf(0, floorf(height - bottom)), y1 = (int)fminf(height, ceilf(height - top));
+    glScissor(x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0);
+}
+
+// Ring radius in canvas heights.
+#define RING_RADIUS 0.11f
+#define BADGE_RADIUS 0.024f
+#define BADGE_RIGHT 0.022f
+#define BADGE_BOTTOM 0.065f
+
+static void draw_music_pass(const struct music_uniforms *u, float mode) {
+    glUniform1f(u->mode, mode);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+}
+
+void render_music(const struct renderer *r, const struct scene *s, int width, int height, struct viewport viewport,
+                  float canvas_aspect, float time, const struct music_levels *m, int badge, float opacity) {
+    const struct config *cfg = &s->cfg;
+    const struct music_uniforms *u = &r->mu;
+    struct view v = compute_view(s, width, height, viewport, canvas_aspect);
+    float bands[MUSIC_BANDS];
+    for (int i = 0; i < MUSIC_BANDS; i++) bands[i] = fminf(1.2f, m->bands[i] * cfg->music_sensitivity);
+    // The ring sits in the middle of the canvas: detected subjects are often off-centre or too large.
+    float radius = RING_RADIUS, center[2] = {v.aspect * 0.5f, 0.5f};
+
+    glViewport(0, 0, width, height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_SCISSOR_TEST);
+    glUseProgram(r->music_program);
+    glUniform1f(u->time, time);
+    glUniform1f(u->aspect, v.aspect);
+    glUniform2f(u->resolution, width, height);
+    glUniform4f(u->viewport, viewport.x, viewport.y, viewport.width, viewport.height);
+    glUniform2fv(u->center, 1, center);
+    glUniform1f(u->radius, radius);
+    glUniform1fv(u->bands, MUSIC_BANDS, bands);
+    glUniform1f(u->beat, m->beat);
+    glUniform1f(u->bass, fminf(1, m->bass * cfg->music_sensitivity));
+    glUniform1f(u->presence, m->presence);
+    glUniform3fv(u->color_a, 1, s->glow_a);
+    glUniform3fv(u->color_b, 1, s->glow_b);
+    glUniform1f(u->opacity, opacity);
+    glBindBuffer(GL_ARRAY_BUFFER, r->triangle_vbo);
+    glEnableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    if (m->presence > 0.01f && cfg->music_style == MUSIC_RING) {
+        // The bars reach 0.4 radius out and the beat ripple 0.45; a little more leaves room for the glow.
+        float reach = radius * 1.5f + 0.02f;
+        float cx = (0.5f - viewport.x) / viewport.width * width;
+        float cy = (0.5f - viewport.y) / viewport.height * height;
+        float rx = reach / v.aspect / viewport.width * width, ry = reach / viewport.height * height;
+        scissor_to(width, height, cx - rx, cy - ry, cx + rx, cy + ry);
+        draw_music_pass(u, 0);
+    } else if (m->presence > 0.01f && cfg->music_style == MUSIC_WAVE) {
+        scissor_to(width, height, 0, height * 0.75f, width, height);
+        draw_music_pass(u, 1);
+    }
+    if (badge) {
+        float badge_radius = BADGE_RADIUS * height;
+        float x = width - BADGE_RIGHT * height - badge_radius, y = height - BADGE_BOTTOM * height - badge_radius;
+        glUniform3f(u->badge, x, height - y, badge_radius);
+        scissor_to(width, height, x - 2 * badge_radius, y - 2 * badge_radius, x + 2 * badge_radius, y + 2 * badge_radius);
+        draw_music_pass(u, 2);
+    }
+    glDisable(GL_SCISSOR_TEST);
 }

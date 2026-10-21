@@ -13,6 +13,7 @@
 #include "egl.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "lockscreen.h"
+#include "music.h"
 #include "render.h"
 #include "runtime.h"
 #include "snapshot.h"
@@ -23,6 +24,13 @@
 #define RELOAD_CHECK_INTERVAL 1.0
 #define FADE_SECONDS 0.7
 #define LOCK_SCREEN_DELAY 3.0
+#define LOST_FRAME_TIMEOUT 2.0
+#define RESTACK_DELAY 2.0
+#define RESTACK_REPEAT 6.0
+#define COSMIC_BG_SCAN_INTERVAL 5.0
+// Shaders get the animation time as a 32-bit float, which after a day or two is too coarse for
+// smooth motion. The clock restarts (with a crossfade) well before that.
+#define CLOCK_RESTART 14400.0
 
 struct wallpaper;
 
@@ -39,7 +47,9 @@ struct output {
     struct wp_fractional_scale_v1 *fractional;
     struct wl_egl_window *egl_window;
     EGLSurface egl_surface;
+    struct wl_callback *frame_callback;
     int width, height, buffer_width, buffer_height, configured, frame_pending;
+    double frame_requested;
 };
 
 // All scenes built from one version of the settings: one per distinct picture, plus which scene
@@ -60,9 +70,12 @@ struct wallpaper {
     const struct settings_source *src;
     struct config cfg;
     struct renderer renderer;
-    int renderer_ready;
+    int renderer_ready, restacks_left;
     struct look current, previous;
-    double fade_start, lock_screen_due;
+    double fade_start, lock_screen_due, restack_due, next_cosmic_bg_scan;
+    double clock_start, previous_clock_start;
+    pid_t cosmic_bg;
+    char music_source[sizeof ((struct config *)0)->music_source];
     struct timespec config_mtime;
 
     struct wl_display *display;
@@ -218,8 +231,26 @@ static void start_crossfade(struct wallpaper *wp) {
     make_any_surface_current(wp);
     look_clear(&wp->previous);
     wp->previous = wp->current;
+    wp->previous_clock_start = wp->clock_start;
     memset(&wp->current, 0, sizeof wp->current);
     wp->fade_start = monotonic_seconds();
+}
+
+static void restart_clock_if_due(struct wallpaper *wp, double now) {
+    if (now - wp->clock_start < CLOCK_RESTART || wp->previous.n || !wp->renderer_ready) return;
+    start_crossfade(wp);
+    wp->clock_start = now;
+}
+
+static void sync_music(struct wallpaper *wp) {
+    int running = music_running();
+    if (!wp->cfg.music) {
+        if (running) music_stop();
+        return;
+    }
+    if (running && !strcmp(wp->music_source, wp->cfg.music_source)) return;
+    snprintf(wp->music_source, sizeof wp->music_source, "%s", wp->cfg.music_source);
+    if (music_start(wp->music_source)) fprintf(stderr, "driftpaper: music sync is unavailable\n");
 }
 
 static void reload_if_changed(struct wallpaper *wp) {
@@ -248,31 +279,42 @@ static void reload_if_changed(struct wallpaper *wp) {
     if (wp->renderer_ready) start_crossfade(wp);
     for (int i = 0; i < wp->n_outputs; i++)
         if (wp->outputs[i].configured) update_buffer_size(&wp->outputs[i]);
+    sync_music(wp);
     schedule_lock_screen(wp);
 }
 
 static void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
-    (void)time;
+    struct output *o = data;
     wl_callback_destroy(callback);
-    ((struct output *)data)->frame_pending = 0;
+    o->frame_callback = NULL;
+    o->frame_pending = 0;
 }
 
 static const struct wl_callback_listener frame_listener = {.done = frame_done};
 
-static void draw_output(struct output *o, float time, float fade) {
+// `music` is NULL while music sync is off.
+static void draw_output(struct output *o, double now, float fade, const struct music_levels *music, int badge) {
     struct wallpaper *wp = o->wp;
     eglMakeCurrent(wp->egl.display, o->egl_surface, o->egl_surface, wp->egl.context);
 
     struct scene *scene = output_scene(wp, &wp->current, o);
     struct scene *fading = fade < 1 ? look_scene_for(&wp->previous, wp, o) : NULL;
     if (!scene && !fading) return;
-    float aspect;
+    float aspect, time = (float)(now - wp->clock_start), fading_time = (float)(now - wp->previous_clock_start);
+    float pulse = music ? render_music_pulse(&wp->cfg, music) : 0;
     struct viewport viewport = output_viewport(o, &aspect);
-    if (scene) render_draw(&wp->renderer, scene, o->buffer_width, o->buffer_height, viewport, aspect, time, 1);
-    if (fading) render_draw(&wp->renderer, fading, o->buffer_width, o->buffer_height, viewport, aspect, time, scene ? 1 - fade : 1);
+    if (scene) render_draw(&wp->renderer, scene, o->buffer_width, o->buffer_height, viewport, aspect, time, 1, pulse);
+    if (fading)
+        render_draw(&wp->renderer, fading, o->buffer_width, o->buffer_height, viewport, aspect, fading_time,
+                    scene ? 1 - fade : 1, pulse);
+    if (music)
+        render_music(&wp->renderer, scene ? scene : fading, o->buffer_width, o->buffer_height, viewport, aspect,
+                     scene ? time : fading_time, music, badge, 1);
 
     o->frame_pending = 1;
-    wl_callback_add_listener(wl_surface_frame(o->surface), &frame_listener, o);
+    o->frame_requested = now;
+    o->frame_callback = wl_surface_frame(o->surface);
+    wl_callback_add_listener(o->frame_callback, &frame_listener, o);
     eglSwapBuffers(wp->egl.display, o->egl_surface);
 }
 
@@ -283,12 +325,14 @@ static void destroy_surface(struct output *o) {
         eglDestroySurface(egl->display, o->egl_surface);
     }
     if (o->egl_window) wl_egl_window_destroy(o->egl_window);
+    if (o->frame_callback) wl_callback_destroy(o->frame_callback);
     if (o->fractional) wp_fractional_scale_v1_destroy(o->fractional);
     if (o->viewport) wp_viewport_destroy(o->viewport);
     if (o->layer_surface) zwlr_layer_surface_v1_destroy(o->layer_surface);
     if (o->surface) wl_surface_destroy(o->surface);
     o->egl_surface = EGL_NO_SURFACE;
     o->egl_window = NULL;
+    o->frame_callback = NULL;
     o->fractional = NULL;
     o->viewport = NULL;
     o->layer_surface = NULL;
@@ -315,6 +359,12 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *layer_surf
     if (!o->egl_window) {
         o->egl_window = wl_egl_window_create(o->surface, o->buffer_width, o->buffer_height);
         o->egl_surface = eglCreateWindowSurface(egl->display, egl->config, (EGLNativeWindowType)o->egl_window, NULL);
+        if (o->egl_surface == EGL_NO_SURFACE) {
+            fprintf(stderr, "driftpaper: cannot draw on monitor %s (EGL error 0x%x)\n", o->name, eglGetError());
+            wl_egl_window_destroy(o->egl_window);
+            o->egl_window = NULL;
+            return;
+        }
         eglMakeCurrent(egl->display, o->egl_surface, o->egl_surface, egl->context);
         eglSwapInterval(egl->display, 0);
         prepare_renderer(o->wp);
@@ -484,8 +534,26 @@ static int wait_for_events(struct wallpaper *wp, double deadline) {
     return wl_display_dispatch_pending(wp->display);
 }
 
-static void draw_visible_outputs(struct wallpaper *wp, double now, float time) {
+// The badge goes in the bottom-right corner of the whole desktop, not on every monitor.
+static int badge_output(const struct wallpaper *wp) {
+    int best = -1;
+    for (int i = 0; i < wp->n_outputs; i++) {
+        const struct output *o = &wp->outputs[i], *b = best >= 0 ? &wp->outputs[best] : NULL;
+        if (!o->configured) continue;
+        int right = o->x + o->width, bottom = o->y + o->height;
+        if (!b || right > b->x + b->width || (right == b->x + b->width && bottom > b->y + b->height)) best = i;
+    }
+    return best;
+}
+
+static void draw_visible_outputs(struct wallpaper *wp, double now) {
     if (!wp->renderer_ready) return;
+    struct music_levels levels, *music = NULL;
+    if (wp->cfg.music) {
+        music_read(&levels);
+        music = &levels;
+    }
+    int badge = wp->cfg.music && wp->cfg.music_badge ? badge_output(wp) : -1;
     float fade = wp->previous.n ? (float)((now - wp->fade_start) / FADE_SECONDS) : 1;
     if (fade >= 1 && wp->previous.n) {
         make_any_surface_current(wp);
@@ -494,8 +562,39 @@ static void draw_visible_outputs(struct wallpaper *wp, double now, float time) {
     for (int i = 0; i < wp->n_outputs; i++) {
         struct output *o = &wp->outputs[i];
         // Covered monitors (e.g. a fullscreen game) never answer the frame callback, so they are skipped.
-        if (o->configured && !o->frame_pending) draw_output(o, time, fade);
+        // COSMIC can also drop a callback while it sets up outputs at login; without this retry
+        // that monitor would stay frozen on its first frame.
+        if (o->frame_pending && now - o->frame_requested > LOST_FRAME_TIMEOUT) o->frame_pending = 0;
+        if (o->configured && o->egl_surface && !o->frame_pending) draw_output(o, now, fade, music, i == badge);
     }
+}
+
+// Surfaces in the same layer stack in the order they appear, so when cosmic-bg starts (at login it
+// starts at the same moment as us) its static picture can end up covering the animation. Making our
+// surfaces again, once the new cosmic-bg has had time to show its own, puts them back on top.
+static void schedule_restack(struct wallpaper *wp, double now) {
+    wp->restack_due = now + RESTACK_DELAY;
+    wp->restacks_left = 2;
+}
+
+static void restack_if_due(struct wallpaper *wp, double now) {
+    if (!wp->restack_due || now < wp->restack_due) return;
+    wp->restack_due = --wp->restacks_left > 0 ? now + RESTACK_REPEAT : 0;
+    for (int i = 0; i < wp->n_outputs; i++) {
+        if (!wp->outputs[i].surface) continue;
+        destroy_surface(&wp->outputs[i]);
+        sync_surface(&wp->outputs[i]);
+    }
+}
+
+static void watch_cosmic_bg(struct wallpaper *wp, double now) {
+    if (!lockscreen_supported()) return;
+    // Without a known cosmic-bg each check scans /proc, so do that less often.
+    if (!wp->cosmic_bg && now < wp->next_cosmic_bg_scan) return;
+    wp->next_cosmic_bg_scan = now + COSMIC_BG_SCAN_INTERVAL;
+    pid_t pid = runtime_cosmic_bg_pid(wp->cosmic_bg);
+    if (pid && pid != wp->cosmic_bg) schedule_restack(wp, now);
+    wp->cosmic_bg = pid;
 }
 
 static int lock_screen_outdated(const struct wallpaper *wp) {
@@ -510,6 +609,7 @@ static int lock_screen_outdated(const struct wallpaper *wp) {
 }
 
 static void shutdown_wallpaper(struct wallpaper *wp) {
+    music_stop();
     make_any_surface_current(wp);
     look_clear(&wp->previous);
     look_clear(&wp->current);
@@ -547,6 +647,10 @@ int wallpaper_run(const struct settings_source *src, const struct config *initia
     signal(SIGTERM, request_stop);
 
     double start = monotonic_seconds(), next_frame = start, next_reload_check = start + RELOAD_CHECK_INTERVAL;
+    wp.clock_start = wp.previous_clock_start = start;
+    sync_music(&wp);
+    // cosmic-bg may not be visible from here (Flatpak), so always check the stacking after starting.
+    if (lockscreen_supported()) schedule_restack(&wp, start);
     while (!stop_requested) {
         if (wait_for_events(&wp, next_frame) < 0) {
             fprintf(stderr, "driftpaper: lost the Wayland connection\n");
@@ -562,13 +666,16 @@ int wallpaper_run(const struct settings_source *src, const struct config *initia
             }
             reload_if_changed(&wp);
             for (int i = 0; i < wp.n_outputs; i++) sync_surface(&wp.outputs[i]);
+            watch_cosmic_bg(&wp, now);
+            restack_if_due(&wp, now);
+            restart_clock_if_due(&wp, now);
             if (wp.lock_screen_due && now >= wp.lock_screen_due && wp.renderer_ready) {
                 wp.lock_screen_due = 0;
                 export_lock_screen(&wp);
             }
         }
         if (now >= next_frame) {
-            draw_visible_outputs(&wp, now, (float)(now - start));
+            draw_visible_outputs(&wp, now);
             next_frame += 1.0 / config_fps(&wp.cfg);
             if (next_frame < now) next_frame = now + 1.0 / config_fps(&wp.cfg);
         }

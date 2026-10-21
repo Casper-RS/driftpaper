@@ -7,7 +7,8 @@
 #include "stb_image_write.h"
 
 static int render_frame_png(const struct renderer *r, const struct scene *s, int width, int height,
-                            struct viewport viewport, float canvas_aspect, float time, const char *path) {
+                            struct viewport viewport, float canvas_aspect, float time, const struct music_levels *music,
+                            const char *path) {
     GLuint texture, framebuffer;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
@@ -19,7 +20,8 @@ static int render_frame_png(const struct renderer *r, const struct scene *s, int
     int written = 0;
     unsigned char *pixels = malloc((size_t)width * height * 4);
     if (pixels && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
-        render_draw(r, s, width, height, viewport, canvas_aspect, time, 1);
+        render_draw(r, s, width, height, viewport, canvas_aspect, time, 1, music ? render_music_pulse(&s->cfg, music) : 0);
+        if (music) render_music(r, s, width, height, viewport, canvas_aspect, time, music, s->cfg.music_badge, 1);
         glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         for (size_t i = 0; i < (size_t)width * height; i++) pixels[4 * i + 3] = 255;
         stbi_flip_vertically_on_write(1);
@@ -36,10 +38,10 @@ static int render_frame_png(const struct renderer *r, const struct scene *s, int
 
 int snapshot_render_png(const struct renderer *r, const struct scene *s, int width, int height,
                         struct viewport viewport, float canvas_aspect, const char *path) {
-    return render_frame_png(r, s, width, height, viewport, canvas_aspect, SNAPSHOT_TIME, path);
+    return render_frame_png(r, s, width, height, viewport, canvas_aspect, SNAPSHOT_TIME, NULL, path);
 }
 
-int snapshot_write(const struct config *cfg, const char *path, int width, int height, float time) {
+int snapshot_write(const struct config *cfg, const char *path, int width, int height, float time, int music) {
     runtime_find_wayland_display();
     struct wl_display *display = wl_display_connect(NULL);
     EGLNativeDisplayType native = display ? (EGLNativeDisplayType)display : EGL_DEFAULT_DISPLAY;
@@ -54,7 +56,10 @@ int snapshot_write(const struct config *cfg, const char *path, int width, int he
     struct scene scene;
     int rc = 1;
     if (!renderer_init(&renderer) && !scene_create(&renderer, &scene, cfg->image, cfg)) {
-        rc = render_frame_png(&renderer, &scene, width, height, FULL_VIEWPORT, (float)width / height, time, path) ? 1 : 0;
+        struct music_levels sample;
+        music_sample_levels(&sample);
+        rc = render_frame_png(&renderer, &scene, width, height, FULL_VIEWPORT, (float)width / height, time,
+                              music && cfg->music ? &sample : NULL, path) ? 1 : 0;
         scene_destroy(&scene);
     }
     if (rc == 0) printf("wrote %s (%dx%d)\n", path, width, height);

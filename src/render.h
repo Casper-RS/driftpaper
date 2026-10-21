@@ -3,17 +3,22 @@
 #include <time.h>
 #include "analyze.h"
 #include "config.h"
+#include "music.h"
 
 #define MAX_IMAGES 8
 
 struct background_uniforms {
     GLint tex, time, aspect, fit, ellipse, resolution, uv_scale, center, letterbox, viewport, opacity;
     GLint fog_a, fog_b, glow_a, glow_b, fog, glow, glow_falloff, pulse;
-    GLint brightness, contrast, saturation, hue_adjust;
+    GLint brightness, contrast, saturation, hue_adjust, music;
 };
 
 struct particle_uniforms {
-    GLint time, aspect, radius_scale, inner, ellipse, motion, breathe, twinkle, resolution, center, viewport, opacity;
+    GLint time, aspect, radius_scale, inner, ellipse, motion, breathe, twinkle, resolution, center, viewport, opacity, music;
+};
+
+struct music_uniforms {
+    GLint mode, time, aspect, resolution, viewport, center, radius, bands, beat, bass, presence, color_a, color_b, badge, opacity;
 };
 
 struct image {
@@ -26,9 +31,10 @@ struct image {
 };
 
 struct renderer {
-    GLuint background_program, particle_program, triangle_vbo;
+    GLuint background_program, particle_program, music_program, triangle_vbo;
     struct background_uniforms bg;
     struct particle_uniforms pt;
+    struct music_uniforms mu;
     struct image images[MAX_IMAGES];
 };
 
@@ -53,5 +59,12 @@ struct viewport {
 int renderer_init(struct renderer *r);
 int scene_create(struct renderer *r, struct scene *s, const char *image_path, const struct config *cfg);
 void scene_destroy(struct scene *s);
+// `pulse` (0 for none, about 1 on a strong beat) makes the glow and particles throb with the music.
 void render_draw(const struct renderer *r, const struct scene *s, int width, int height, struct viewport viewport,
-                 float canvas_aspect, float time, float opacity);
+                 float canvas_aspect, float time, float opacity, float pulse);
+// Strength of render_draw's pulse for the current music.
+float render_music_pulse(const struct config *cfg, const struct music_levels *m);
+// Draws the music visualiser of `s`'s style over a frame from render_draw, and with `badge` the
+// small round equaliser in the bottom-right corner.
+void render_music(const struct renderer *r, const struct scene *s, int width, int height, struct viewport viewport,
+                  float canvas_aspect, float time, const struct music_levels *m, int badge, float opacity);

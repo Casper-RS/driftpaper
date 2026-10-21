@@ -5,6 +5,29 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-21
+
+### Added
+- Music sync (`music = true`, Music page in the settings window): the glow and particles pulse on
+  the beat, with an equaliser ring in the middle of the screen (`music_style = ring`) or a glowing wave
+  along the bottom (`wave`), and a small equaliser badge in the bottom-right corner
+  (`music_badge`). It listens to the speakers through PulseAudio or PipeWire; libpulse is loaded
+  only when music sync is on.
+
+### Fixed
+- The animation froze after login when COSMIC's own background program started on top of it.
+- A monitor could stay frozen when the compositor dropped a frame callback.
+- Animation became choppy after a day or more of uptime (float precision); the clock now restarts
+  with a crossfade every four hours.
+- Leaked frame callbacks when surfaces were recreated or monitors hidden.
+- A monitor whose EGL surface could not be created was drawn to anyway; it now reports the error.
+- Without cosmic-bg running, COSMIC sessions scanned all of /proc every second; now every 5 s.
+- An empty `size`/`opacity` value read past the end of the string, and colours such as `1g0000`
+  were accepted.
+- `nan` and `inf` were accepted for numeric settings (comparisons with NaN always pass the range
+  check), feeding NaN into the shaders; a huge `seed` overflowed.
+- Settings window: a failed save (e.g. a full disk) could replace the config with a cut-off file.
+
 ## [0.3.0] - 2026-10-12
 
 ### Added
@@ -68,7 +91,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Monitor hotplug support and a per-monitor `outputs` filter.
 - Flatpak bundle and Linux binary on every GitHub release.
 
-[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Casper-RS/driftpaper/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/Casper-RS/driftpaper/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Casper-RS/driftpaper/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Casper-RS/driftpaper/compare/v0.1.0...v0.2.0
