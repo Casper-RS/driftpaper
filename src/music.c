@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 // Low rate and mono keep the listener far below the wallpaper's CPU budget; 5 kHz of spectrum is
@@ -23,6 +24,7 @@
 #define FADE_OUT_AFTER 1.5f
 #define MIN_BEAT_GAP 0.2f
 #define RETRY_SECONDS 5
+#define NO_BEAT_AGE 1000.0f
 
 // The few libpulse-simple declarations needed, so building needs no PulseAudio headers.
 enum { PA_STREAM_RECORD = 2, PA_SAMPLE_FLOAT32LE = 5 };
@@ -53,6 +55,15 @@ struct analyser {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static struct listener *current;
 static struct music_levels shared;
+// Beats are stored as clock times and turned into ages when read: levels arrive about 43 times a
+// second, too coarse for smoothly growing ripples at a different frame rate.
+static double beat_times[MUSIC_RECENT_BEATS];
+
+static double monotonic_seconds(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
 
 static int load_pulse(void) {
     static int loaded;
@@ -113,7 +124,8 @@ static float approach(float value, float target, float rise, float fall) {
     return value + (target - value) * (target > value ? rise : fall);
 }
 
-static void analyse(struct analyser *a, const float *block) {
+// Returns 1 when this block starts a beat.
+static int analyse(struct analyser *a, const float *block) {
     memmove(a->history, a->history + HOP, (FFT_SIZE - HOP) * sizeof(float));
     memcpy(a->history + FFT_SIZE - HOP, block, HOP * sizeof(float));
 
@@ -151,7 +163,8 @@ static void analyse(struct analyser *a, const float *block) {
     float bass = (energy[0] + energy[1] + energy[2]) / 3, bass_peak = (a->band_peak[0] + a->band_peak[1] + a->band_peak[2]) / 3;
     float bass_share = quiet ? 0 : fminf(1, bass / fmaxf(bass_peak, 1e-6f));
     a->since_beat += BLOCK_SECONDS;
-    if (!quiet && bass > a->bass_average * 1.35f && bass_share > 0.4f && a->since_beat >= MIN_BEAT_GAP) {
+    int new_beat = !quiet && bass > a->bass_average * 1.35f && bass_share > 0.4f && a->since_beat >= MIN_BEAT_GAP;
+    if (new_beat) {
         m->beat = 1;
         a->since_beat = 0;
     } else {
@@ -163,12 +176,19 @@ static void analyse(struct analyser *a, const float *block) {
     a->quiet_for = quiet ? a->quiet_for + BLOCK_SECONDS : 0;
     if (!quiet) m->presence = approach(m->presence, 1, 0.12f, 0);
     else if (a->quiet_for > FADE_OUT_AFTER) m->presence *= 0.95f;
+    return new_beat;
 }
 
-static int publish(struct listener *me, const struct music_levels *levels) {
+static int publish(struct listener *me, const struct music_levels *levels, int new_beat) {
     pthread_mutex_lock(&lock);
     int still_current = current == me;
-    if (still_current) shared = *levels;
+    if (still_current) {
+        shared = *levels;
+        if (new_beat) {
+            memmove(beat_times + 1, beat_times, (MUSIC_RECENT_BEATS - 1) * sizeof beat_times[0]);
+            beat_times[0] = monotonic_seconds();
+        }
+    }
     pthread_mutex_unlock(&lock);
     return still_current;
 }
@@ -199,8 +219,8 @@ static void *listen_thread(void *data) {
         if (warned) fprintf(stderr, "driftpaper: listening to '%s' again\n", me->source);
         warned = 0;
         while (!atomic_load(&me->stop) && pa.read(stream, block, sizeof block, &error) == 0) {
-            analyse(a, block);
-            if (!publish(me, &a->levels)) break;
+            int new_beat = analyse(a, block);
+            if (!publish(me, &a->levels, new_beat)) break;
         }
         pa.disconnect(stream);
     }
@@ -241,6 +261,7 @@ void music_stop(void) {
     if (current) atomic_store(&current->stop, 1);
     current = NULL;
     memset(&shared, 0, sizeof shared);
+    memset(beat_times, 0, sizeof beat_times);
     pthread_mutex_unlock(&lock);
 }
 
@@ -252,8 +273,11 @@ int music_running(void) {
 }
 
 void music_read(struct music_levels *out) {
+    double now = monotonic_seconds();
     pthread_mutex_lock(&lock);
     *out = shared;
+    for (int i = 0; i < MUSIC_RECENT_BEATS; i++)
+        out->beat_ages[i] = beat_times[i] > 0 ? (float)fmin(now - beat_times[i], NO_BEAT_AGE) : NO_BEAT_AGE;
     pthread_mutex_unlock(&lock);
 }
 
@@ -265,4 +289,6 @@ void music_sample_levels(struct music_levels *out) {
     out->bass = 0.8f;
     out->beat = 0.5f;
     out->presence = 1;
+    static const float ages[MUSIC_RECENT_BEATS] = {0.35f, 0.85f, 1.4f, 1.9f};
+    memcpy(out->beat_ages, ages, sizeof ages);
 }

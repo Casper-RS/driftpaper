@@ -12,7 +12,8 @@ static const char *dist_names[] = {"even", "outer", "inner"};
 static const char *dir_names[] = {"both", "cw", "ccw"};
 static const char *scale_names[] = {"fill", "fit", "stretch"};
 static const char *renderer_names[] = {"auto", "gpu", "cpu"};
-static const char *music_style_names[] = {"ring", "wave", "glow"};
+static const char *music_style_names[] = {"ring", "halo", "ripples", "glow"};
+static const char *music_badge_names[] = {"off", "bars", "dial", "vinyl"};
 
 static const struct { const char *name, *desc, *body; } presets[] = {
     {"shards", "orbiting triangles, squares and sparks around the subject (default)", ""},
@@ -58,7 +59,7 @@ void config_defaults(struct config *c) {
     c->contrast = 1; c->saturation = 1;
     c->hue_center = 220; c->hue_width = 40;
     c->music_style = MUSIC_RING;
-    c->music_badge = 1;
+    c->music_badge = BADGE_BARS;
     c->music_sensitivity = 1;
     snprintf(c->music_source, sizeof c->music_source, "default");
     c->music_size = 1; c->music_brightness = 1; c->music_shadow = 0.4f;
@@ -238,8 +239,12 @@ int config_set(struct config *c, const char *key, const char *value, const char 
         *nums[i].p = f; return 0;
     }
     if (!strcmp(key, "seed")) {
-        if (parse_float(v, &f) || f < 0 || f >= 4294967296.0f) return bad(where, key, v, "a whole number from 0 to 4294967295");
-        c->seed = (unsigned)f; return 0;
+        // Not through a float: that would round seeds above 16777216 and change them on every save.
+        char *end; errno = 0;
+        unsigned long long seed = strtoull(v, &end, 10);
+        if (!isdigit((unsigned char)*v) || *end || errno || seed > 4294967295ull)
+            return bad(where, key, v, "a whole number from 0 to 4294967295");
+        c->seed = (unsigned)seed; return 0;
     }
     if (!strcmp(key, "distribution")) {
         if ((e = parse_enum(v, dist_names, 3)) < 0) return bad(where, key, v, "even, outer or inner");
@@ -272,9 +277,17 @@ int config_set(struct config *c, const char *key, const char *value, const char 
         return 0;
     }
     if (!strcmp(key, "music")) return parse_bool(v, &c->music) ? bad(where, key, v, "true or false") : 0;
-    if (!strcmp(key, "music_badge")) return parse_bool(v, &c->music_badge) ? bad(where, key, v, "true or false") : 0;
+    if (!strcmp(key, "music_badge")) {
+        // true and false are from before there were several badges.
+        int on;
+        if ((e = parse_enum(v, music_badge_names, 4)) < 0 && parse_bool(v, &on) == 0) e = on ? BADGE_BARS : BADGE_OFF;
+        if (e < 0) return bad(where, key, v, "off, bars, dial or vinyl");
+        c->music_badge = e; return 0;
+    }
     if (!strcmp(key, "music_style")) {
-        if ((e = parse_enum(v, music_style_names, 3)) < 0) return bad(where, key, v, "ring, wave or glow");
+        // The wave along the bottom was replaced by the halo.
+        if (!strcasecmp(v, "wave")) { c->music_style = MUSIC_HALO; return 0; }
+        if ((e = parse_enum(v, music_style_names, 4)) < 0) return bad(where, key, v, "ring, halo, ripples or glow");
         c->music_style = e; return 0;
     }
     if (!strcmp(key, "music_bars")) {
@@ -314,7 +327,7 @@ int config_set(struct config *c, const char *key, const char *value, const char 
     if (!strcmp(key, "hue_adjust")) {
         if (!strcasecmp(v, "off")) { c->hue_lightness = 0; return 0; }
         float hue, width, lightness;
-        if (sscanf(v, "%f , %f , %f", &hue, &width, &lightness) != 3 || !isfinite(hue) || !isfinite(width) ||
+        if (sscanf(v, "%f , %f , %f", &hue, &width, &lightness) != 3 || !isfinite(hue) || !(width > 0 && width <= 360) ||
             !isfinite(lightness))
             return bad(where, key, v, "off or hue,width,lightness (e.g. 220,40,-0.2)");
         c->hue_center = hue; c->hue_width = width; c->hue_lightness = lightness;
@@ -445,7 +458,7 @@ void config_print(const struct config *c, FILE *f) {
     else fprintf(f, "hue_adjust = %g, %g, %g\n", c->hue_center, c->hue_width, c->hue_lightness);
     fprintf(f, "\n[music]\n");
     fprintf(f, "music = %s\nmusic_style = %s\n", c->music ? "true" : "false", music_style_names[c->music_style]);
-    fprintf(f, "music_badge = %s\nmusic_sensitivity = %g\nmusic_source = %s\n", c->music_badge ? "true" : "false",
+    fprintf(f, "music_badge = %s\nmusic_sensitivity = %g\nmusic_source = %s\n", music_badge_names[c->music_badge],
             c->music_sensitivity, c->music_source);
     fprintf(f, "music_size = %g\nmusic_brightness = %g\nmusic_shadow = %g\nmusic_bars = %d\nmusic_colors = ",
             c->music_size, c->music_brightness, c->music_shadow, c->music_bars);

@@ -107,13 +107,15 @@ static int parse_options(int argc, char **argv, struct options *opt) {
                 return 2;
             }
             break;
-        case OPT_TIME:
-            opt->snapshot_time = strtof(optarg, NULL);
-            if (!isfinite(opt->snapshot_time) || opt->snapshot_time < 0) {
+        case OPT_TIME: {
+            char *end;
+            opt->snapshot_time = strtof(optarg, &end);
+            if (end == optarg || *end || !isfinite(opt->snapshot_time) || opt->snapshot_time < 0) {
                 fprintf(stderr, "driftpaper: --time expects a number of seconds\n");
                 return 2;
             }
             break;
+        }
         case OPT_WITH_MUSIC:
             opt->snapshot_music = 1;
             break;

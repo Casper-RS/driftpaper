@@ -19,7 +19,7 @@ struct particle_uniforms {
 
 struct music_uniforms {
     GLint mode, time, aspect, resolution, viewport, center, radius, bands, beat, bass, presence, color_a, color_b, badge, opacity;
-    GLint size, bars, shadow, gain;
+    GLint size, bars, shadow, gain, beat_ages, badge_style;
 };
 
 struct image {
@@ -66,6 +66,6 @@ void render_draw(const struct renderer *r, const struct scene *s, int width, int
 // Strength of render_draw's pulse for the current music.
 float render_music_pulse(const struct config *cfg, const struct music_levels *m);
 // Draws the music visualiser of `s`'s style over a frame from render_draw, and with `badge` the
-// small round equaliser in the bottom-right corner.
+// small round badge of `s`'s badge style in the bottom-right corner.
 void render_music(const struct renderer *r, const struct scene *s, int width, int height, struct viewport viewport,
                   float canvas_aspect, float time, const struct music_levels *m, int badge, float opacity);

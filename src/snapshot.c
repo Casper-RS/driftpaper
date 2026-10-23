@@ -6,9 +6,10 @@
 #include "runtime.h"
 #include "stb_image_write.h"
 
-static int render_frame_png(const struct renderer *r, const struct scene *s, int width, int height,
-                            struct viewport viewport, float canvas_aspect, float time, const struct music_levels *music,
-                            const char *path) {
+// Returns the frame as top-down RGB rows, the layout PNG files use.
+static unsigned char *render_frame_rgb(const struct renderer *r, const struct scene *s, int width, int height,
+                                       struct viewport viewport, float canvas_aspect, float time,
+                                       const struct music_levels *music) {
     GLuint texture, framebuffer;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
@@ -17,28 +18,42 @@ static int render_frame_png(const struct renderer *r, const struct scene *s, int
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
 
-    int written = 0;
-    unsigned char *pixels = malloc((size_t)width * height * 4);
-    if (pixels && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+    unsigned char *rgba = malloc((size_t)width * height * 4), *rgb = malloc((size_t)width * height * 3);
+    if (rgba && rgb && glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
         render_draw(r, s, width, height, viewport, canvas_aspect, time, 1, music ? render_music_pulse(&s->cfg, music) : 0);
         if (music) render_music(r, s, width, height, viewport, canvas_aspect, time, music, s->cfg.music_badge, 1);
-        glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        for (size_t i = 0; i < (size_t)width * height; i++) pixels[4 * i + 3] = 255;
-        stbi_flip_vertically_on_write(1);
-        written = stbi_write_png(path, width, height, 4, pixels, width * 4);
+        glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        for (int y = 0; y < height; y++) {
+            const unsigned char *from = rgba + (size_t)(height - 1 - y) * width * 4;
+            unsigned char *to = rgb + (size_t)y * width * 3;
+            for (int x = 0; x < width; x++, from += 4, to += 3) to[0] = from[0], to[1] = from[1], to[2] = from[2];
+        }
+    } else {
+        free(rgb);
+        rgb = NULL;
     }
 
-    free(pixels);
+    free(rgba);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &framebuffer);
     glDeleteTextures(1, &texture);
-    if (!written) fprintf(stderr, "driftpaper: cannot write '%s'\n", path);
-    return written ? 0 : -1;
+    return rgb;
 }
 
-int snapshot_render_png(const struct renderer *r, const struct scene *s, int width, int height,
-                        struct viewport viewport, float canvas_aspect, const char *path) {
-    return render_frame_png(r, s, width, height, viewport, canvas_aspect, SNAPSHOT_TIME, NULL, path);
+unsigned char *snapshot_render_rgb(const struct renderer *r, const struct scene *s, int width, int height,
+                                   struct viewport viewport, float canvas_aspect) {
+    return render_frame_rgb(r, s, width, height, viewport, canvas_aspect, SNAPSHOT_TIME, NULL);
+}
+
+int snapshot_save_png(const char *path, int width, int height, const unsigned char *rgb) {
+    char temp[1100];
+    snprintf(temp, sizeof temp, "%s.tmp", path);
+    if (!stbi_write_png(temp, width, height, 3, rgb, width * 3) || rename(temp, path)) {
+        fprintf(stderr, "driftpaper: cannot write '%s'\n", path);
+        remove(temp);
+        return -1;
+    }
+    return 0;
 }
 
 int snapshot_write(const struct config *cfg, const char *path, int width, int height, float time, int music) {
@@ -58,8 +73,10 @@ int snapshot_write(const struct config *cfg, const char *path, int width, int he
     if (!renderer_init(&renderer) && !scene_create(&renderer, &scene, cfg->image, cfg)) {
         struct music_levels sample;
         music_sample_levels(&sample);
-        rc = render_frame_png(&renderer, &scene, width, height, FULL_VIEWPORT, (float)width / height, time,
-                              music && cfg->music ? &sample : NULL, path) ? 1 : 0;
+        unsigned char *rgb = render_frame_rgb(&renderer, &scene, width, height, FULL_VIEWPORT, (float)width / height, time,
+                                              music && cfg->music ? &sample : NULL);
+        rc = rgb && !snapshot_save_png(path, width, height, rgb) ? 0 : 1;
+        free(rgb);
         scene_destroy(&scene);
     }
     if (rc == 0) printf("wrote %s (%dx%d)\n", path, width, height);

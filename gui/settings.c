@@ -671,19 +671,21 @@ static GtkWidget *build_music_page(void) {
 
     AdwPreferencesGroup *music = add_group(page, "Music", "The wallpaper moves to whatever your speakers play.");
     bind_bool(music, "React to music", "Glow and particles pulse on the beat", &c->music);
-    static const char *styles[] = {"Equaliser ring in the middle", "Wave along the bottom", "Only glow and particles", NULL};
-    GtkWidget *style = bind_enum(music, "Visualiser", NULL, (int *)&c->music_style, styles);
-    GtkWidget *badge = bind_bool(music, "Equaliser badge", "A small round equaliser in the bottom-right corner", &c->music_badge);
+    static const char *styles[] = {"Equaliser ring", "Liquid halo", "Beat ripples", "Only glow and particles", NULL};
+    GtkWidget *style = bind_enum(music, "Visualiser", "Drawn in the middle of the screen", (int *)&c->music_style, styles);
+    static const char *badges[] = {"None", "Equaliser bars", "Spectrum dial", "Vinyl record", NULL};
+    GtkWidget *badge = bind_enum(music, "Corner badge", "A small round badge in the bottom-right corner", (int *)&c->music_badge,
+                                 badges);
     GtkWidget *sensitivity = bind_float(music, "Sensitivity", "Higher values react more strongly", &c->music_sensitivity,
                                         0.1, 5, 0.1, 1);
     GtkWidget *music_only[] = {style, badge, sensitivity};
     for (size_t i = 0; i < G_N_ELEMENTS(music_only); i++) bind_enable_only_when(music_only[i], &c->music, 1);
 
-    AdwPreferencesGroup *look = add_group(page, "Look", "How the ring, wave and badge are drawn.");
-    GtkWidget *size = bind_float(look, "Size", "Ring size and wave height", &c->music_size, 0.5, 2, 0.05, 2);
+    AdwPreferencesGroup *look = add_group(page, "Look", "How the visualiser and badge are drawn.");
+    GtkWidget *size = bind_float(look, "Size", "Size of the visualiser", &c->music_size, 0.5, 2, 0.05, 2);
     GtkWidget *brightness = bind_float(look, "Brightness", NULL, &c->music_brightness, 0, 3, 0.05, 2);
     GtkWidget *bars = bind_int(look, "Bars", "Number of bars around the ring", &c->music_bars, 24, 144, 4);
-    GtkWidget *shadow = bind_float(look, "Shadow behind the ring", "Keeps the bars readable on bright pictures",
+    GtkWidget *shadow = bind_float(look, "Shadow", "Keeps the visualiser readable on bright pictures",
                                    &c->music_shadow, 0, 1, 0.05, 2);
     GtkWidget *colors_auto = bind_bool(look, "Colours from the glow", NULL, &c->music_colors_auto);
     GtkWidget *colors = adw_action_row_new();
@@ -695,7 +697,7 @@ static GtkWidget *build_music_page(void) {
     GtkWidget *look_rows[] = {size, brightness, bars, shadow, colors_auto, colors};
     for (size_t i = 0; i < G_N_ELEMENTS(look_rows); i++) bind_enable_only_when(look_rows[i], &c->music, 1);
     bind_enable_only_when(bars, (int *)&c->music_style, MUSIC_RING);
-    bind_enable_only_when(shadow, (int *)&c->music_style, MUSIC_RING);
+    bind_disable_when(shadow, (int *)&c->music_style, MUSIC_GLOW);
     return GTK_WIDGET(page);
 }
 

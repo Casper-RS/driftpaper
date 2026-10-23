@@ -2,7 +2,10 @@
 #include "wallpaper.h"
 #include <math.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +30,8 @@
 #define LOST_FRAME_TIMEOUT 2.0
 #define RESTACK_DELAY 2.0
 #define RESTACK_REPEAT 6.0
+#define COVER_WATCH 6.0
+#define STALLED_FRAME 0.4
 #define COSMIC_BG_SCAN_INTERVAL 5.0
 // Shaders get the animation time as a 32-bit float, which after a day or two is too coarse for
 // smooth motion. The clock restarts (with a crossfade) well before that.
@@ -72,7 +77,7 @@ struct wallpaper {
     struct renderer renderer;
     int renderer_ready, restacks_left;
     struct look current, previous;
-    double fade_start, lock_screen_due, restack_due, next_cosmic_bg_scan;
+    double fade_start, lock_screen_due, restack_due, next_cosmic_bg_scan, cover_watch_until;
     double clock_start, previous_clock_start;
     pid_t cosmic_bg;
     char music_source[sizeof ((struct config *)0)->music_source];
@@ -204,23 +209,68 @@ static struct viewport output_viewport(const struct output *o, float *canvas_asp
     return (struct viewport){(o->x - x0) / w, (o->y - y0) / h, o->width / w, o->height / h};
 }
 
-static void export_lock_screen(struct wallpaper *wp) {
+// Compressing a PNG per monitor takes about a second, so it happens on a thread of its own and
+// the animation keeps running. Only one export runs at a time.
+struct lock_screen_job {
+    int count;
+    struct {
+        char output[64];
+        int width, height;
+        unsigned char *rgb;
+    } images[MAX_OUTPUTS];
+};
+
+static atomic_int lock_screen_writing, lock_screen_written;
+
+static void *write_lock_screen(void *data) {
+    struct lock_screen_job *job = data;
     const char *names[MAX_OUTPUTS];
     int count = 0;
     lockscreen_prepare();
+    for (int i = 0; i < job->count; i++) {
+        char path[1024];
+        lockscreen_image_path(job->images[i].output, path, sizeof path);
+        if (!snapshot_save_png(path, job->images[i].width, job->images[i].height, job->images[i].rgb))
+            names[count++] = job->images[i].output;
+    }
+    if (lockscreen_apply(names, count)) fprintf(stderr, "driftpaper: could not update the COSMIC background config\n");
+    for (int i = 0; i < job->count; i++) free(job->images[i].rgb);
+    free(job);
+    atomic_store(&lock_screen_written, 1);
+    atomic_store(&lock_screen_writing, 0);
+    return NULL;
+}
+
+static void export_lock_screen(struct wallpaper *wp) {
+    struct lock_screen_job *job = calloc(1, sizeof *job);
+    if (!job) return;
     for (int i = 0; i < wp->n_outputs; i++) {
         struct output *o = &wp->outputs[i];
         struct scene *scene = o->configured ? output_scene(wp, &wp->current, o) : NULL;
         if (!scene) continue;
-        char path[1024];
         float aspect;
         struct viewport viewport = output_viewport(o, &aspect);
         int width = (int)lround(o->width * output_scale(o)), height = (int)lround(o->height * output_scale(o));
-        lockscreen_image_path(o->name, path, sizeof path);
         make_any_surface_current(wp);
-        if (snapshot_render_png(&wp->renderer, scene, width, height, viewport, aspect, path) == 0) names[count++] = o->name;
+        unsigned char *rgb = snapshot_render_rgb(&wp->renderer, scene, width, height, viewport, aspect);
+        if (!rgb) continue;
+        snprintf(job->images[job->count].output, sizeof job->images[0].output, "%s", o->name);
+        job->images[job->count].width = width;
+        job->images[job->count].height = height;
+        job->images[job->count++].rgb = rgb;
     }
-    if (lockscreen_apply(names, count)) fprintf(stderr, "driftpaper: could not update the COSMIC background config\n");
+    if (!job->count) {
+        free(job);
+        return;
+    }
+
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    atomic_store(&lock_screen_writing, 1);
+    if (pthread_create(&thread, &attr, write_lock_screen, job)) write_lock_screen(job);
+    pthread_attr_destroy(&attr);
 }
 
 static void schedule_lock_screen(struct wallpaper *wp) {
@@ -253,12 +303,25 @@ static void sync_music(struct wallpaper *wp) {
     if (music_start(wp->music_source)) fprintf(stderr, "driftpaper: music sync is unavailable\n");
 }
 
+static int only_music_changed(const struct config *a, const struct config *b) {
+    return !memcmp(a, b, offsetof(struct config, music));
+}
+
+// The visualiser is drawn from each scene's copy of the settings, so music settings can be changed
+// in place, without rebuilding the scenes.
+static void update_music_settings(struct look *look, const struct config *cfg) {
+    size_t from = offsetof(struct config, music);
+    for (int i = 0; i < look->n; i++)
+        memcpy((char *)&look->scenes[i].cfg + from, (const char *)cfg + from, sizeof *cfg - from);
+}
+
 static void reload_if_changed(struct wallpaper *wp) {
     struct timespec config_mtime = modification_time(settings_config_path(wp->src));
     int images_changed = 0;
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        const struct image *img = &wp->renderer.images[i];
-        if (img->refs && !same_time(modification_time(img->path), img->mtime)) images_changed = 1;
+    // Only the pictures on screen now: the one fading out is still the old version of an edited file.
+    for (int i = 0; i < wp->current.n; i++) {
+        const struct image *img = wp->current.scenes[i].image;
+        if (!same_time(modification_time(img->path), img->mtime)) images_changed = 1;
     }
     if (same_time(config_mtime, wp->config_mtime) && !images_changed) return;
     wp->config_mtime = config_mtime;
@@ -268,18 +331,30 @@ static void reload_if_changed(struct wallpaper *wp) {
         fprintf(stderr, "driftpaper: config has errors, keeping the previous settings\n");
         return;
     }
+    // Editors that rewrite the file in place can be caught halfway, with the picture not written yet.
+    if (!next.image[0]) {
+        fprintf(stderr, "driftpaper: config has no image, keeping the previous settings\n");
+        return;
+    }
     if (!next.enabled) {
         fprintf(stderr, "driftpaper: wallpaper disabled in the settings, exiting\n");
         stop_requested = 1;
         return;
     }
-    if (!memcmp(&next, &wp->cfg, sizeof next)) return;
+    if (!images_changed && !memcmp(&next, &wp->cfg, sizeof next)) return;
     if (next.renderer != wp->cfg.renderer) fprintf(stderr, "driftpaper: restart driftpaper to switch the renderer\n");
+    int music_only = !images_changed && only_music_changed(&next, &wp->cfg);
     wp->cfg = next;
+    sync_music(wp);
+    // The lock screen is exported without the visualiser, so music settings leave it as it is.
+    if (music_only) {
+        update_music_settings(&wp->current, &wp->cfg);
+        update_music_settings(&wp->previous, &wp->cfg);
+        return;
+    }
     if (wp->renderer_ready) start_crossfade(wp);
     for (int i = 0; i < wp->n_outputs; i++)
         if (wp->outputs[i].configured) update_buffer_size(&wp->outputs[i]);
-    sync_music(wp);
     schedule_lock_screen(wp);
 }
 
@@ -570,20 +645,40 @@ static void draw_visible_outputs(struct wallpaper *wp, double now) {
 }
 
 // Surfaces in the same layer stack in the order they appear, so when cosmic-bg starts (at login it
-// starts at the same moment as us) its static picture can end up covering the animation. Making our
-// surfaces again, once the new cosmic-bg has had time to show its own, puts them back on top.
+// starts at the same moment as us) or reloads its config (after every lock screen export) its static
+// picture can end up covering the animation. Making our surfaces again, once cosmic-bg has had time
+// to show its own, puts them back on top.
 static void schedule_restack(struct wallpaper *wp, double now) {
     wp->restack_due = now + RESTACK_DELAY;
     wp->restacks_left = 2;
 }
 
-static void restack_if_due(struct wallpaper *wp, double now) {
-    if (!wp->restack_due || now < wp->restack_due) return;
-    wp->restack_due = --wp->restacks_left > 0 ? now + RESTACK_REPEAT : 0;
+static void restack(struct wallpaper *wp) {
     for (int i = 0; i < wp->n_outputs; i++) {
         if (!wp->outputs[i].surface) continue;
         destroy_surface(&wp->outputs[i]);
         sync_surface(&wp->outputs[i]);
+    }
+}
+
+static void restack_if_due(struct wallpaper *wp, double now) {
+    if (!wp->restack_due || now < wp->restack_due) return;
+    wp->restack_due = --wp->restacks_left > 0 ? now + RESTACK_REPEAT : 0;
+    restack(wp);
+}
+
+// After a lock screen export cosmic-bg covers us within about a second, and from then on our
+// frames are no longer shown. Restacking as soon as one stalls keeps that freeze short; the
+// scheduled restacks remain as a fallback.
+static void restack_if_covered(struct wallpaper *wp, double now) {
+    if (now > wp->cover_watch_until) return;
+    for (int i = 0; i < wp->n_outputs; i++) {
+        const struct output *o = &wp->outputs[i];
+        if (o->frame_pending && now - o->frame_requested > STALLED_FRAME) {
+            wp->cover_watch_until = 0;
+            restack(wp);
+            return;
+        }
     }
 }
 
@@ -669,12 +764,17 @@ int wallpaper_run(const struct settings_source *src, const struct config *initia
             watch_cosmic_bg(&wp, now);
             restack_if_due(&wp, now);
             restart_clock_if_due(&wp, now);
-            if (wp.lock_screen_due && now >= wp.lock_screen_due && wp.renderer_ready) {
+            if (wp.lock_screen_due && now >= wp.lock_screen_due && wp.renderer_ready && !atomic_load(&lock_screen_writing)) {
                 wp.lock_screen_due = 0;
                 export_lock_screen(&wp);
             }
+            if (atomic_exchange(&lock_screen_written, 0)) {
+                wp.cover_watch_until = now + COVER_WATCH;
+                schedule_restack(&wp, now);
+            }
         }
         if (now >= next_frame) {
+            restack_if_covered(&wp, now);
             draw_visible_outputs(&wp, now);
             next_frame += 1.0 / config_fps(&wp.cfg);
             if (next_frame < now) next_frame = now + 1.0 / config_fps(&wp.cfg);

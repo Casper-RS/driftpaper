@@ -5,6 +5,32 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-23
+
+### Added
+- Two new music visualisers: `music_style = halo`, glowing outlines bent by the spectrum that
+  flow around each other like a liquid ring, and `ripples`, a shock wave on every beat around a
+  circle of dots that follow the spectrum.
+- Badge designs: `music_badge = bars`, `dial` (a small round spectrum) or `vinyl` (a spinning
+  record whose edge lights up with the music), or `off`. `true` and `false` still work.
+
+### Changed
+- The wave along the bottom is gone; `music_style = wave` now shows the halo.
+- Shorter README.
+
+### Fixed
+- The background froze after turning music on or off or switching visualiser: every settings
+  change re-exported the lock screen, which made COSMIC's own background program reload and
+  cover the animation. Music settings no longer touch the lock screen or rebuild the scenes, and
+  after a real export driftpaper puts itself back on top.
+- The animation stalled for about two seconds while the lock screen images were saved; they are
+  now compressed on a separate thread, and written under a temporary name first.
+- Editing the picture file in place was noticed but not shown, and the config was re-read every
+  second afterwards.
+- A config file caught halfway through being rewritten could remove the picture for a moment.
+- `seed` values above 16777216 changed slightly on every save (they were read as a float).
+- `hue_adjust` with a width of 0 gave undefined shader results; `--time` accepted text.
+
 ## [1.0.0] - 2026-10-21
 
 ### Added
@@ -93,7 +119,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Monitor hotplug support and a per-monitor `outputs` filter.
 - Flatpak bundle and Linux binary on every GitHub release.
 
-[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Casper-RS/driftpaper/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Casper-RS/driftpaper/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/Casper-RS/driftpaper/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Casper-RS/driftpaper/compare/v0.2.0...v0.2.1

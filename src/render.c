@@ -183,15 +183,18 @@ static const char *PARTICLE_FS = FRAGMENT_PRECISION
     "}\n";
 
 // The music visualiser, drawn additively over the finished frame inside a scissor box. mode 0 is a
-// ring of equaliser bars around the subject, 1 a glowing wave along the bottom, 2 the badge.
-// Bands are mirrored so the picture stays symmetric: bass at the bottom of the ring and in the
-// middle of the wave. Colours come out premultiplied: the badge's dark disc has alpha, glow has none.
+// ring of equaliser bars, 1 a liquid halo, 2 beat ripples, 3 the corner badge (badge_style 1 bars,
+// 2 dial, 3 vinyl). Bands are mirrored so the picture stays symmetric: bass at the bottom.
+// Colours come out premultiplied: dark parts (shadow, badge disc) have alpha, light has none.
 static const char *MUSIC_FS = FRAGMENT_PRECISION
-    "uniform float mode, time, aspect, radius, beat, bass, presence, opacity, size, bars, shadow, gain;\n"
+    "uniform float mode, time, aspect, radius, beat, bass, presence, opacity, size, bars, shadow, gain, badge_style;\n"
     "uniform float bands[16];\n"
+    "uniform vec4 beat_ages;\n"
     "uniform vec2 resolution, center;\n"
     "uniform vec3 color_a, color_b, badge;\n"
     "uniform vec4 viewport;\n"
+    "\n"
+    "const float PI = 3.14159265;\n"
     "\n"
     "float band(float x) {\n"
     "    float v = 0.0;\n"
@@ -199,70 +202,144 @@ static const char *MUSIC_FS = FRAGMENT_PRECISION
     "    return v;\n"
     "}\n"
     "\n"
+    "// Position on the mirrored spectrum for an angle measured from straight down: 0 bass, 15 treble.\n"
+    "float spectrum_at(float angle) { return abs(mod(angle + PI, 2.0 * PI) - PI) / PI * 15.0; }\n"
     "vec3 tint(float x) { return mix(color_a, color_b, clamp(x / 15.0, 0.0, 1.0)); }\n"
     "float line(float distance, float width) { return 1.0 - smoothstep(0.0, width, abs(distance)); }\n"
+    "float glow_line(float distance, float px, float width, float reach) {\n"
+    "    return line(distance, width * px) + exp(-abs(distance) / (reach * px)) * 0.35;\n"
+    "}\n"
+    "// A soft dark band behind the visualiser keeps it readable on bright pictures.\n"
+    "float shade(float d, float from, float to) {\n"
+    "    return shadow * smoothstep(from - radius * 0.2, from, d) * (1.0 - smoothstep(to, to + radius * 0.45, d));\n"
+    "}\n"
     "\n"
-    "vec4 ring(vec2 p, float px) {\n"
-    "    vec2 offset = p - center;\n"
-    "    float d = length(offset), angle = atan(offset.x, offset.y);\n"
-    "    float x = abs(angle) / 3.14159265 * 15.0, v = band(x);\n"
+    "vec4 ring(vec2 offset, float d, float angle, float px) {\n"
+    "    float x = spectrum_at(angle), v = band(x);\n"
     "    float reach = radius * 0.35, tip = radius + reach * v;\n"
-    "    float slot = fract(angle / 6.2831853 * bars);\n"
+    "    float slot = fract(angle / (2.0 * PI) * bars);\n"
     "    float bar = smoothstep(0.12, 0.22, slot) * smoothstep(0.88, 0.78, slot) * step(radius, d) * step(d, tip);\n"
     "    float rise = clamp((d - radius) / max(reach, 0.001), 0.0, 1.0);\n"
     "    float ripple_at = radius + (1.0 - beat) * radius * 0.45;\n"
     "    vec3 c = mix(tint(x), vec3(1.0), 0.3);\n"
     "    vec3 light = c * bar * (0.35 + 0.55 * rise)\n"
-    "               + mix(c, vec3(1.0), 0.5) * (line(d - tip, 1.8 * px) + exp(-abs(d - tip) / (6.0 * px)) * 0.35)\n"
+    "               + mix(c, vec3(1.0), 0.5) * glow_line(d - tip, px, 1.8, 6.0)\n"
     "               + c * line(d - radius, 1.4 * px) * 0.55\n"
     "               + c * exp(-abs(d - ripple_at) / (5.0 * px)) * beat * beat * 0.7;\n"
-    "    // A soft dark band behind the bars keeps them readable on bright pictures.\n"
-    "    float shade = shadow * smoothstep(radius * 0.75, radius * 0.95, d) * (1.0 - smoothstep(tip, tip + radius * 0.45, d));\n"
-    "    return vec4(light, shade);\n"
+    "    return vec4(light, shade(d, radius * 0.95, tip));\n"
     "}\n"
     "\n"
-    "vec4 wave(vec2 screen, float px) {\n"
-    "    float x = abs(screen.x - 0.5) * 2.0 * 15.0, v = band(x);\n"
-    "    float y = 1.0 - screen.y, crest = (0.07 + 0.11 * v) * size, echo = (0.07 + 0.07 * band(x * 0.8 + 2.0)) * size;\n"
-    "    float column = fract(screen.x * resolution.x / (9.0 * px * resolution.y));\n"
-    "    float columns = smoothstep(0.1, 0.25, column) * smoothstep(0.9, 0.75, column);\n"
-    "    float below = step(y, crest) * pow(clamp(y / crest, 0.0, 1.0), 2.0);\n"
-    "    vec3 c = tint(x);\n"
-    "    vec3 light = c * below * columns * 0.3\n"
-    "               + mix(c, vec3(1.0), 0.35) * (line(y - crest, 2.0 * px) * 0.9 + exp(-abs(y - crest) / (8.0 * px)) * 0.3)\n"
-    "               + tint(15.0 - x) * line(y - echo, 1.5 * px) * 0.35;\n"
-    "    return vec4(light * (0.75 + 0.5 * beat), 0.0);\n"
+    "// Three outlines bent by the spectrum, each turning at its own pace, flow over each other like a\n"
+    "// liquid ring; the inside fills with light on the bass.\n"
+    "vec4 halo(vec2 offset, float d, float angle, float px) {\n"
+    "    vec3 light = vec3(0.0);\n"
+    "    float outermost = radius;\n"
+    "    for (int i = 0; i < 3; i++) {\n"
+    "        float fi = float(i);\n"
+    "        float turn = angle + time * (0.11 + 0.06 * fi) * (i == 1 ? -1.0 : 1.0) + fi * 2.1;\n"
+    "        float x = spectrum_at(turn), v = band(x);\n"
+    "        float edge = radius * (1.0 + 0.3 * v + 0.035 * sin(turn * 3.0 + time * 0.8 + fi * 1.7) * (1.0 + 2.0 * bass));\n"
+    "        outermost = max(outermost, edge);\n"
+    "        vec3 c = mix(tint(x), vec3(1.0), 0.15 + 0.25 * beat);\n"
+    "        light += c * (glow_line(d - edge, px, 2.2 + 1.8 * v, 16.0) + exp(-abs(d - edge) / (radius * 0.12)) * 0.12) * (0.8 - 0.2 * fi);\n"
+    "    }\n"
+    "    float inside = 1.0 - smoothstep(radius * 0.35, radius * 1.05, d);\n"
+    "    light += mix(color_a, color_b, 0.35) * inside * inside * (0.05 + 0.22 * bass + 0.18 * beat);\n"
+    "    return vec4(light, shade(d, radius * 0.9, outermost));\n"
+    "}\n"
+    "\n"
+    "float dot_light(vec2 offset, float slot, float slots, float px, out float x) {\n"
+    "    float a = (slot + 0.5) / slots * 2.0 * PI;\n"
+    "    x = spectrum_at(a);\n"
+    "    float v = band(x), r = radius * (1.06 + 0.42 * v), dot_size = px * (1.6 + 3.2 * v) * (0.7 + 0.3 * size);\n"
+    "    float dd = length(offset - vec2(sin(a), cos(a)) * r);\n"
+    "    return (1.0 - smoothstep(dot_size * 0.5, dot_size, dd)) + exp(-dd / (dot_size * 1.4)) * 0.45;\n"
+    "}\n"
+    "\n"
+    "// Every beat sends a shock wave out of the circle; around it, dots rise and fall with the spectrum.\n"
+    "vec4 ripples(vec2 offset, float d, float angle, float px) {\n"
+    "    vec3 light = vec3(0.0);\n"
+    "    for (int i = 0; i < 4; i++) {\n"
+    "        float life = clamp(beat_ages[i] / 2.4, 0.0, 1.0);\n"
+    "        float at = radius * (1.0 + 2.1 * (1.0 - pow(1.0 - life, 2.6)));\n"
+    "        float fade = (1.0 - life) * (1.0 - life);\n"
+    "        light += mix(color_a, color_b, life) * glow_line(d - at, px, 1.4 + 5.0 * life, 8.0 + 30.0 * life) * fade * 0.8;\n"
+    "    }\n"
+    "    float slots = 56.0, slot = floor(mod(angle, 2.0 * PI) / (2.0 * PI) * slots);\n"
+    "    for (int k = -1; k <= 1; k++) {\n"
+    "        float x, lit = dot_light(offset, mod(slot + float(k), slots), slots, px, x);\n"
+    "        light += mix(tint(x), vec3(1.0), 0.35) * lit;\n"
+    "    }\n"
+    "    light += tint(spectrum_at(angle)) * line(d - radius, 1.2 * px) * (0.3 + 0.4 * beat);\n"
+    "    return vec4(light, shade(d, radius * 0.95, radius * 1.5));\n"
     "}\n"
     "\n"
     "float capsule(vec2 q, float half_height, float r) { return length(vec2(q.x, max(abs(q.y) - half_height, 0.0))) - r; }\n"
     "\n"
-    "vec4 badge_icon(vec2 q, float r) {\n"
-    "    float d = length(q), aa = 1.0;\n"
-    "    float disc = 1.0 - smoothstep(r - aa, r + aa, d);\n"
-    "    float breathing = 0.5 + 0.5 * sin(time * 1.6);\n"
-    "    float alive = presence;\n"
-    "    vec3 light = mix(color_a, vec3(1.0), 0.25) * line(d - r, 1.4) * (0.35 + 0.65 * max(bass, (1.0 - alive) * breathing * 0.4));\n"
-    "    float ripple_at = r + (1.0 - beat) * r * 0.7;\n"
-    "    light += color_a * line(d - ripple_at, 1.6) * beat * beat * (1.0 - smoothstep(r, r * 1.7, d)) * 0.9;\n"
+    "// Badges are drawn in framebuffer pixels around badge.xy with radius r, y pointing up.\n"
+    "vec3 badge_bars(vec2 q, float r, float breathing) {\n"
+    "    vec3 light = vec3(0.0);\n"
     "    for (int i = 0; i < 5; i++) {\n"
     "        float fi = float(i), level = band(abs(fi - 2.0) * 5.0 + 0.5);\n"
-    "        float half_height = r * mix(0.04 + 0.05 * breathing, 0.1 + 0.38 * level, alive);\n"
+    "        float half_height = r * mix(0.04 + 0.05 * breathing, 0.1 + 0.38 * level, presence);\n"
     "        float s = capsule(q - vec2((fi - 2.0) * r * 0.27, 0.0), half_height, r * 0.07);\n"
     "        vec3 c = mix(color_a, color_b, clamp(0.5 + q.y / (r * 1.2), 0.0, 1.0));\n"
-    "        light += mix(c, vec3(1.0), 0.2) * (1.0 - smoothstep(-aa, aa, s)) * (0.55 + 0.45 * alive);\n"
+    "        light += mix(c, vec3(1.0), 0.2) * (1.0 - smoothstep(-1.0, 1.0, s)) * (0.55 + 0.45 * presence);\n"
     "    }\n"
-    "    float shade = disc * 0.5;\n"
-    "    return vec4(vec3(0.02, 0.022, 0.03) * shade + light * disc + light * (1.0 - disc) * 0.6, shade);\n"
+    "    return light;\n"
+    "}\n"
+    "\n"
+    "// A small round spectrum: ticks around the inside of the disc and a dot that jumps on the beat.\n"
+    "vec3 badge_dial(vec2 q, float r, float breathing) {\n"
+    "    float d = length(q), angle = atan(q.x, -q.y);\n"
+    "    float x = spectrum_at(angle), v = mix(0.12 + 0.1 * breathing, band(x), presence);\n"
+    "    float slot = fract(angle / (2.0 * PI) * 28.0);\n"
+    "    float tick = smoothstep(0.18, 0.3, slot) * smoothstep(0.82, 0.7, slot);\n"
+    "    float inner = r * 0.4, outer = inner + r * (0.08 + 0.42 * min(v, 1.1));\n"
+    "    float bar = tick * smoothstep(inner - 0.5, inner + 0.5, d) * (1.0 - smoothstep(outer - 0.8, outer + 0.8, d));\n"
+    "    float core = 1.0 - smoothstep(r * (0.13 + 0.09 * beat) - 0.8, r * (0.13 + 0.09 * beat) + 0.8, d);\n"
+    "    return mix(tint(x), vec3(1.0), 0.15) * bar * (0.55 + 0.45 * presence) + mix(color_a, vec3(1.0), 0.45) * core;\n"
+    "}\n"
+    "\n"
+    "// A spinning record: fine grooves catch a still highlight (as under a lamp), the label turns at\n"
+    "// 33 rpm and its colours swell with the bass.\n"
+    "vec3 badge_vinyl(vec2 q, float r, float breathing) {\n"
+    "    float d = length(q), lamp = atan(q.y, q.x);\n"
+    "    float record = smoothstep(r * 0.36, r * 0.39, d);\n"
+    "    float grooves = 0.55 + 0.45 * sin(d * 2.4 + sin(d * 0.37) * 3.0);\n"
+    "    float sheen = pow(abs(cos(lamp - 0.9)), 10.0) * (0.5 + 0.5 * grooves);\n"
+    "    vec3 light = vec3(0.025, 0.026, 0.032) * record + vec3(0.16, 0.165, 0.18) * sheen * record * (0.6 + 0.4 * presence);\n"
+    "    float x = spectrum_at(lamp + PI * 0.5);\n"
+    "    light += tint(x) * line(d - r * 0.93, 1.6) * (0.25 + 0.75 * band(x) * presence);\n"
+    "    float spin = lamp + time * 3.4558;\n"
+    "    vec3 label = mix(color_a, color_b, 0.5 + 0.5 * sin(spin)) * (0.45 + 0.35 * presence + 0.5 * bass * presence);\n"
+    "    label = mix(label, vec3(1.0), 0.6 * line(sin(spin * 2.0) * d, 0.9) * step(r * 0.2, d));\n"
+    "    light += label * (1.0 - record) * smoothstep(r * 0.05, r * 0.08, d);\n"
+    "    return light;\n"
+    "}\n"
+    "\n"
+    "vec4 badge_icon(vec2 q, float r) {\n"
+    "    float d = length(q);\n"
+    "    float disc = 1.0 - smoothstep(r - 1.0, r + 1.0, d);\n"
+    "    float breathing = 0.5 + 0.5 * sin(time * 1.6);\n"
+    "    vec3 inside = badge_style < 1.5 ? badge_bars(q, r, breathing)\n"
+    "                : badge_style < 2.5 ? badge_dial(q, r, breathing) : badge_vinyl(q, r, breathing);\n"
+    "    vec3 rim = mix(color_a, vec3(1.0), 0.25) * line(d - r, 1.4) * (0.35 + 0.65 * max(bass, (1.0 - presence) * breathing * 0.4));\n"
+    "    float ripple_at = r + (1.0 - beat) * r * 0.7;\n"
+    "    rim += color_a * line(d - ripple_at, 1.6) * beat * beat * (1.0 - smoothstep(r, r * 1.7, d)) * 0.9;\n"
+    "    float dark = disc * (badge_style > 2.5 ? 0.92 : 0.5);\n"
+    "    return vec4(vec3(0.02, 0.022, 0.03) * dark + inside * disc + rim, dark);\n"
     "}\n"
     "\n"
     "void main() {\n"
     "    vec2 screen = vec2(gl_FragCoord.x / resolution.x, 1.0 - gl_FragCoord.y / resolution.y);\n"
     "    vec4 c;\n"
-    "    if (mode > 1.5) c = badge_icon(gl_FragCoord.xy - badge.xy, badge.z);\n"
+    "    if (mode > 2.5) c = badge_icon(gl_FragCoord.xy - badge.xy, badge.z);\n"
     "    else {\n"
     "        float px = viewport.w / resolution.y;\n"
-    "        vec2 canvas = viewport.xy + screen * viewport.zw;\n"
-    "        c = mode < 0.5 ? ring(canvas * vec2(aspect, 1.0), px) : wave(screen, 1.0 / resolution.y);\n"
+    "        vec2 offset = (viewport.xy + screen * viewport.zw) * vec2(aspect, 1.0) - center;\n"
+    "        float d = length(offset), angle = atan(offset.x, offset.y);\n"
+    "        c = mode < 0.5 ? ring(offset, d, angle, px) : mode < 1.5 ? halo(offset, d, angle, px) : ripples(offset, d, angle, px);\n"
     "        c *= presence;\n"
     "    }\n"
     "    gl_FragColor = vec4(c.rgb * gain, c.a) * opacity;\n"
@@ -342,6 +419,7 @@ static void find_uniforms(struct renderer *r) {
         .badge = glGetUniformLocation(p, "badge"), .opacity = glGetUniformLocation(p, "opacity"),
         .size = glGetUniformLocation(p, "size"), .bars = glGetUniformLocation(p, "bars"),
         .shadow = glGetUniformLocation(p, "shadow"), .gain = glGetUniformLocation(p, "gain"),
+        .beat_ages = glGetUniformLocation(p, "beat_ages"), .badge_style = glGetUniformLocation(p, "badge_style"),
     };
 }
 
@@ -698,6 +776,7 @@ void render_music(const struct renderer *r, const struct scene *s, int width, in
     glUniform1f(u->radius, radius);
     glUniform1fv(u->bands, MUSIC_BANDS, bands);
     glUniform1f(u->beat, m->beat);
+    glUniform4fv(u->beat_ages, 1, m->beat_ages);
     glUniform1f(u->bass, fminf(1, m->bass * cfg->music_sensitivity));
     glUniform1f(u->presence, m->presence);
     glUniform3fv(u->color_a, 1, cfg->music_colors_auto ? s->glow_a : cfg->music_colors[0]);
@@ -713,25 +792,23 @@ void render_music(const struct renderer *r, const struct scene *s, int width, in
     glDisableVertexAttribArray(2);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
-    if (m->presence > 0.01f && cfg->music_style == MUSIC_RING) {
-        // The bars reach 0.42 radius out and the shadow fades out 0.45 radius beyond them.
-        float reach = radius * 1.9f + 0.02f;
+    if (m->presence > 0.01f && cfg->music_style != MUSIC_GLOW) {
+        // How far from the centre each style can light up or shade, in radii: the ring's bars and
+        // the halo's outlines reach about 1.4 and their shadow 0.45 further; ripples spread to 3.1.
+        float reach = radius * (cfg->music_style == MUSIC_RIPPLES ? 3.4f : 1.95f) + 0.02f;
         float cx = (0.5f - viewport.x) / viewport.width * width;
         float cy = (0.5f - viewport.y) / viewport.height * height;
         float rx = reach / v.aspect / viewport.width * width, ry = reach / viewport.height * height;
         scissor_to(width, height, cx - rx, cy - ry, cx + rx, cy + ry);
-        draw_music_pass(u, 0);
-    } else if (m->presence > 0.01f && cfg->music_style == MUSIC_WAVE) {
-        // The crest peaks near 0.2 of the height at size 1; leave room for its glow.
-        scissor_to(width, height, 0, height * fmaxf(0, 1 - 0.25f * cfg->music_size), width, height);
-        draw_music_pass(u, 1);
+        draw_music_pass(u, cfg->music_style == MUSIC_RING ? 0 : cfg->music_style == MUSIC_HALO ? 1 : 2);
     }
-    if (badge) {
+    if (badge && cfg->music_badge != BADGE_OFF) {
         float badge_radius = BADGE_RADIUS * height;
         float x = width - BADGE_RIGHT * height - badge_radius, y = height - BADGE_BOTTOM * height - badge_radius;
         glUniform3f(u->badge, x, height - y, badge_radius);
         scissor_to(width, height, x - 2 * badge_radius, y - 2 * badge_radius, x + 2 * badge_radius, y + 2 * badge_radius);
-        draw_music_pass(u, 2);
+        glUniform1f(u->badge_style, cfg->music_badge);
+        draw_music_pass(u, 3);
     }
     glDisable(GL_SCISSOR_TEST);
 }

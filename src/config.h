@@ -11,7 +11,8 @@ enum distribution { DIST_EVEN, DIST_OUTER, DIST_INNER };
 enum direction { DIR_BOTH, DIR_CW, DIR_CCW };
 enum scale_mode { SCALE_FILL, SCALE_FIT, SCALE_STRETCH };
 enum renderer_kind { RENDERER_AUTO, RENDERER_GPU, RENDERER_CPU };
-enum music_style { MUSIC_RING, MUSIC_WAVE, MUSIC_GLOW };
+enum music_style { MUSIC_RING, MUSIC_HALO, MUSIC_RIPPLES, MUSIC_GLOW };
+enum music_badge { BADGE_OFF, BADGE_BARS, BADGE_DIAL, BADGE_VINYL };
 
 extern const char *shape_names[SHAPE_COUNT];
 
@@ -66,7 +67,7 @@ struct config {
     // Music sync: the look reacts to what the speakers play.
     int music;
     enum music_style music_style;
-    int music_badge;
+    enum music_badge music_badge;
     float music_sensitivity;
     char music_source[256];
     float music_size, music_brightness, music_shadow;

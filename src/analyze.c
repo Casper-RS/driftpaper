@@ -65,7 +65,7 @@ static struct image downscale(const unsigned char *rgba, int w, int h) {
             double sum[3] = {0};
             for (int yy = y0; yy < y1; yy++)
                 for (int xx = x0; xx < x1; xx++)
-                    for (int ch = 0; ch < 3; ch++) sum[ch] += rgba[4 * (yy * w + xx) + ch];
+                    for (int ch = 0; ch < 3; ch++) sum[ch] += rgba[4 * ((size_t)yy * w + xx) + ch];
             int count = (x1 - x0) * (y1 - y0);
             for (int ch = 0; ch < 3; ch++) img.rgb[3 * (y * img.width + x) + ch] = (float)(sum[ch] / (count * 255.0));
         }
