@@ -483,6 +483,8 @@ static void create_surface(struct output *o) {
     wl_surface_commit(o->surface);
 }
 
+static void schedule_restack(struct wallpaper *wp, double now);
+
 static void sync_surface(struct output *o) {
     if (!o->wl_output || !o->announced) return;
     int wanted = output_wanted(o->wp, o);
@@ -517,6 +519,13 @@ static void output_done(void *data, struct wl_output *wl_output) {
     struct output *o = data;
     o->announced = 1;
     sync_surface(o);
+    // A monitor that wakes up, is plugged in or changes mode gets a new cosmic-bg surface, which
+    // can end up on top of ours.
+    if (o->wp->clock_start) {
+        double now = monotonic_seconds();
+        schedule_restack(o->wp, now);
+        o->wp->cover_watch_until = now + COVER_WATCH;
+    }
 }
 
 static const struct wl_output_listener output_listener = {

@@ -5,6 +5,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-24
+
+### Fixed
+- The background froze after the monitors woke from sleep, were plugged in or changed mode:
+  COSMIC's own background program made new surfaces for them on top of the animation.
+  driftpaper now puts itself back on top after any monitor change.
+
 ## [1.1.0] - 2026-10-23
 
 ### Added
@@ -119,7 +126,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Monitor hotplug support and a per-monitor `outputs` filter.
 - Flatpak bundle and Linux binary on every GitHub release.
 
-[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Casper-RS/driftpaper/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Casper-RS/driftpaper/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Casper-RS/driftpaper/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/Casper-RS/driftpaper/compare/v0.2.1...v0.3.0
