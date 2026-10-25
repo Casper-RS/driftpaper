@@ -36,6 +36,7 @@
 // Shaders get the animation time as a 32-bit float, which after a day or two is too coarse for
 // smooth motion. The clock restarts (with a crossfade) well before that.
 #define CLOCK_RESTART 14400.0
+#define MAX_DECODES 8
 
 struct wallpaper;
 
@@ -71,9 +72,26 @@ struct look {
     int n_failed;
 };
 
+// New pictures are decoded on threads of their own; the thread sets `done` and the main loop
+// frees the job, so a job is never freed while its thread still runs.
+struct decode_job {
+    struct decoded_image result;
+    int failed;
+    atomic_int done;
+};
+
 struct wallpaper {
     const struct settings_source *src;
     struct config cfg;
+    // Settings that need a picture which is still being decoded wait here, so the old look keeps
+    // moving instead of freezing while the picture loads.
+    struct config pending;
+    int has_pending;
+    struct decode_job *decodes[MAX_DECODES];
+    struct image *held[MAX_IMAGES];
+    int n_decodes, n_held;
+    char failed[MAX_IMAGES][PATH_LEN];
+    int n_failed;
     struct renderer renderer;
     int renderer_ready, restacks_left;
     struct look current, previous;
@@ -115,15 +133,23 @@ static int same_time(struct timespec a, struct timespec b) {
     return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
 }
 
-static int output_wanted(const struct wallpaper *wp, const struct output *o) {
-    if (wp->cfg.n_outputs == 0) return 1;
-    for (int i = 0; i < wp->cfg.n_outputs; i++)
-        if (!strcmp(wp->cfg.outputs[i], o->name)) return 1;
+static int shown_with(const struct config *cfg, const struct output *o) {
+    if (cfg->n_outputs == 0) return 1;
+    for (int i = 0; i < cfg->n_outputs; i++)
+        if (!strcmp(cfg->outputs[i], o->name)) return 1;
     return 0;
 }
 
+static int output_wanted(const struct wallpaper *wp, const struct output *o) {
+    return shown_with(&wp->cfg, o);
+}
+
+static const char *image_with(const struct config *cfg, const struct output *o) {
+    return cfg->span ? cfg->image : config_image_for(cfg, o->name);
+}
+
 static const char *image_for(const struct wallpaper *wp, const struct output *o) {
-    return wp->cfg.span ? wp->cfg.image : config_image_for(&wp->cfg, o->name);
+    return image_with(&wp->cfg, o);
 }
 
 static int scene_with_image(struct wallpaper *wp, struct look *look, const char *image) {
@@ -216,7 +242,7 @@ struct lock_screen_job {
     struct {
         char output[64];
         int width, height;
-        unsigned char *rgb;
+        unsigned char *rgba;
     } images[MAX_OUTPUTS];
 };
 
@@ -230,13 +256,15 @@ static void *write_lock_screen(void *data) {
     for (int i = 0; i < job->count; i++) {
         char path[1024];
         lockscreen_image_path(job->images[i].output, path, sizeof path);
-        if (!snapshot_save_png(path, job->images[i].width, job->images[i].height, job->images[i].rgb))
+        if (!snapshot_save_png(path, job->images[i].width, job->images[i].height, job->images[i].rgba))
             names[count++] = job->images[i].output;
     }
-    if (lockscreen_apply(names, count)) fprintf(stderr, "driftpaper: could not update the COSMIC background config\n");
-    for (int i = 0; i < job->count; i++) free(job->images[i].rgb);
+    int applied = lockscreen_apply(names, count);
+    if (applied < 0) fprintf(stderr, "driftpaper: could not update the COSMIC background config\n");
+    for (int i = 0; i < job->count; i++) free(job->images[i].rgba);
     free(job);
-    atomic_store(&lock_screen_written, 1);
+    // cosmic-bg only reloads (and covers us) when its config changed, not when just the pictures did.
+    if (applied > 0) atomic_store(&lock_screen_written, 1);
     atomic_store(&lock_screen_writing, 0);
     return NULL;
 }
@@ -252,12 +280,12 @@ static void export_lock_screen(struct wallpaper *wp) {
         struct viewport viewport = output_viewport(o, &aspect);
         int width = (int)lround(o->width * output_scale(o)), height = (int)lround(o->height * output_scale(o));
         make_any_surface_current(wp);
-        unsigned char *rgb = snapshot_render_rgb(&wp->renderer, scene, width, height, viewport, aspect);
-        if (!rgb) continue;
+        unsigned char *rgba = snapshot_render_rgba(&wp->renderer, scene, width, height, viewport, aspect);
+        if (!rgba) continue;
         snprintf(job->images[job->count].output, sizeof job->images[0].output, "%s", o->name);
         job->images[job->count].width = width;
         job->images[job->count].height = height;
-        job->images[job->count++].rgb = rgb;
+        job->images[job->count++].rgba = rgba;
     }
     if (!job->count) {
         free(job);
@@ -315,6 +343,116 @@ static void update_music_settings(struct look *look, const struct config *cfg) {
         memcpy((char *)&look->scenes[i].cfg + from, (const char *)cfg + from, sizeof *cfg - from);
 }
 
+static void *decode_thread(void *data) {
+    struct decode_job *job = data;
+    // image_decode clears its result first, path included.
+    char path[PATH_LEN];
+    snprintf(path, sizeof path, "%s", job->result.path);
+    job->failed = image_decode(&job->result, path, job->result.ellipse) != 0;
+    atomic_store(&job->done, 1);
+    return NULL;
+}
+
+static int decoding(const struct wallpaper *wp, const char *image, float ellipse) {
+    for (int i = 0; i < wp->n_decodes; i++)
+        if (!strcmp(wp->decodes[i]->result.path, image) && wp->decodes[i]->result.ellipse == ellipse) return 1;
+    return 0;
+}
+
+static int decode_failed(const struct wallpaper *wp, const char *image) {
+    for (int i = 0; i < wp->n_failed; i++)
+        if (!strcmp(wp->failed[i], image)) return 1;
+    return 0;
+}
+
+static void start_decode(struct wallpaper *wp, const char *image, float ellipse) {
+    if (wp->n_decodes == MAX_DECODES || decoding(wp, image, ellipse)) return;
+    struct decode_job *job = calloc(1, sizeof *job);
+    if (!job) return;
+    snprintf(job->result.path, sizeof job->result.path, "%s", image);
+    job->result.ellipse = ellipse;
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&thread, &attr, decode_thread, job)) decode_thread(job);
+    pthread_attr_destroy(&attr);
+    wp->decodes[wp->n_decodes++] = job;
+}
+
+static int pending_needs(const struct wallpaper *wp, const char *image, float ellipse) {
+    if (!wp->has_pending || wp->pending.ellipse != ellipse) return 0;
+    for (int i = 0; i < wp->n_outputs; i++) {
+        const struct output *o = &wp->outputs[i];
+        if (o->announced && shown_with(&wp->pending, o) && !strcmp(image_with(&wp->pending, o), image)) return 1;
+    }
+    return 0;
+}
+
+// Uploads finished pictures and holds them until the settings that wanted them are applied.
+static void collect_decodes(struct wallpaper *wp) {
+    for (int i = 0; i < wp->n_decodes;) {
+        struct decode_job *job = wp->decodes[i];
+        if (!atomic_load(&job->done)) {
+            i++;
+            continue;
+        }
+        int needed = pending_needs(wp, job->result.path, job->result.ellipse);
+        struct image *img = NULL;
+        if (!job->failed && needed && wp->n_held < MAX_IMAGES) {
+            make_any_surface_current(wp);
+            img = renderer_add_image(&wp->renderer, &job->result);
+        }
+        if (img) wp->held[wp->n_held++] = img;
+        else image_decoded_free(&job->result);
+        if (!img && needed && wp->n_failed < MAX_IMAGES) snprintf(wp->failed[wp->n_failed++], PATH_LEN, "%s", job->result.path);
+        free(job);
+        wp->decodes[i] = wp->decodes[--wp->n_decodes];
+    }
+}
+
+static int pending_images_ready(struct wallpaper *wp) {
+    int ready = 1;
+    for (int i = 0; i < wp->n_outputs; i++) {
+        const struct output *o = &wp->outputs[i];
+        if (!o->announced || !shown_with(&wp->pending, o)) continue;
+        const char *image = image_with(&wp->pending, o);
+        if (!image[0] || decode_failed(wp, image) || renderer_has_image(&wp->renderer, image, wp->pending.ellipse)) continue;
+        start_decode(wp, image, wp->pending.ellipse);
+        ready = 0;
+    }
+    return ready;
+}
+
+static void drop_pending(struct wallpaper *wp) {
+    if (wp->n_held) make_any_surface_current(wp);
+    for (int i = 0; i < wp->n_held; i++) renderer_release_image(wp->held[i]);
+    wp->n_held = 0;
+    wp->n_failed = 0;
+    wp->has_pending = 0;
+}
+
+static void apply_pending_when_ready(struct wallpaper *wp) {
+    if (!wp->has_pending) return;
+    if (wp->renderer_ready) {
+        collect_decodes(wp);
+        make_any_surface_current(wp);
+        if (!pending_images_ready(wp)) return;
+    }
+    wp->cfg = wp->pending;
+    sync_music(wp);
+    if (wp->renderer_ready) {
+        start_crossfade(wp);
+        // Builds the new scenes now, while the decoded pictures are still held.
+        for (int i = 0; i < wp->n_outputs; i++)
+            if (wp->outputs[i].configured) output_scene(wp, &wp->current, &wp->outputs[i]);
+    }
+    drop_pending(wp);
+    for (int i = 0; i < wp->n_outputs; i++)
+        if (wp->outputs[i].configured) update_buffer_size(&wp->outputs[i]);
+    schedule_lock_screen(wp);
+}
+
 static void reload_if_changed(struct wallpaper *wp) {
     struct timespec config_mtime = modification_time(settings_config_path(wp->src));
     int images_changed = 0;
@@ -341,21 +479,23 @@ static void reload_if_changed(struct wallpaper *wp) {
         stop_requested = 1;
         return;
     }
-    if (!images_changed && !memcmp(&next, &wp->cfg, sizeof next)) return;
+    if (!images_changed && !memcmp(&next, &wp->cfg, sizeof next)) {
+        drop_pending(wp);
+        return;
+    }
     if (next.renderer != wp->cfg.renderer) fprintf(stderr, "driftpaper: restart driftpaper to switch the renderer\n");
-    int music_only = !images_changed && only_music_changed(&next, &wp->cfg);
-    wp->cfg = next;
-    sync_music(wp);
     // The lock screen is exported without the visualiser, so music settings leave it as it is.
-    if (music_only) {
+    if (!images_changed && only_music_changed(&next, &wp->cfg)) {
+        drop_pending(wp);
+        wp->cfg = next;
+        sync_music(wp);
         update_music_settings(&wp->current, &wp->cfg);
         update_music_settings(&wp->previous, &wp->cfg);
         return;
     }
-    if (wp->renderer_ready) start_crossfade(wp);
-    for (int i = 0; i < wp->n_outputs; i++)
-        if (wp->outputs[i].configured) update_buffer_size(&wp->outputs[i]);
-    schedule_lock_screen(wp);
+    wp->pending = next;
+    wp->has_pending = 1;
+    apply_pending_when_ready(wp);
 }
 
 static void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
@@ -782,6 +922,7 @@ int wallpaper_run(const struct settings_source *src, const struct config *initia
                 schedule_restack(&wp, now);
             }
         }
+        apply_pending_when_ready(&wp);
         if (now >= next_frame) {
             restack_if_covered(&wp, now);
             draw_visible_outputs(&wp, now);

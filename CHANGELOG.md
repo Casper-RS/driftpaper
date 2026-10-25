@@ -5,6 +5,20 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-25
+
+### Fixed
+- Changing settings made the background stutter several times a few seconds later: every lock
+  screen update rewrote COSMIC's background config, so COSMIC's background program reloaded and
+  covered the animation. The config is now only written when it really changes, in a fixed
+  order, and monitors where the animation is hidden keep their entry.
+- Choosing another picture or changing the width stretch froze the animation while the picture
+  loaded (about 0.4 s for a large PNG). Pictures now load in the background and the old look
+  keeps moving until the new one fades in.
+
+### Changed
+- Lock screen updates take less time away from the animation.
+
 ## [1.1.1] - 2026-10-24
 
 ### Fixed
@@ -126,7 +140,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - Monitor hotplug support and a per-monitor `outputs` filter.
 - Flatpak bundle and Linux binary on every GitHub release.
 
-[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/Casper-RS/driftpaper/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/Casper-RS/driftpaper/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Casper-RS/driftpaper/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Casper-RS/driftpaper/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Casper-RS/driftpaper/compare/v0.3.0...v1.0.0

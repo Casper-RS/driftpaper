@@ -56,8 +56,28 @@ struct viewport {
 
 #define FULL_VIEWPORT ((struct viewport){0, 0, 1, 1})
 
-// All functions need a current GLES2 context. Images are cached and shared between scenes.
+// A picture decoded and analysed away from the GL thread, ready for renderer_add_image.
+struct decoded_image {
+    char path[PATH_LEN];
+    float ellipse;
+    struct timespec mtime;
+    unsigned char *pixels;
+    int width, height;
+    struct analysis analysis;
+};
+
+// Needs no GL context, so it can run on another thread.
+int image_decode(struct decoded_image *d, const char *path, float ellipse);
+void image_decoded_free(struct decoded_image *d);
+
+// All functions below need a current GLES2 context. Images are cached and shared between scenes.
 int renderer_init(struct renderer *r);
+// Whether `path`, as it is on disk now, is loaded for this ellipse.
+int renderer_has_image(struct renderer *r, const char *path, float ellipse);
+// Uploads a decoded picture (freeing its pixels) and holds it until renderer_release_image.
+// Returns NULL when it can't be used or every slot is taken.
+struct image *renderer_add_image(struct renderer *r, struct decoded_image *d);
+void renderer_release_image(struct image *img);
 int scene_create(struct renderer *r, struct scene *s, const char *image_path, const struct config *cfg);
 void scene_destroy(struct scene *s);
 // `pulse` (0 for none, about 1 on a strong beat) makes the glow and particles throb with the music.

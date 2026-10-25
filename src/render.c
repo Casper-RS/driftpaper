@@ -446,18 +446,32 @@ static struct timespec modification_time(const char *path) {
     return stat(path, &st) == 0 ? st.st_mtim : (struct timespec){0};
 }
 
-static int load_image(struct image *img, const char *path, float ellipse) {
-    int w, h, channels;
-    unsigned char *pixels = stbi_load(path, &w, &h, &channels, 4);
-    if (!pixels) {
+int image_decode(struct decoded_image *d, const char *path, float ellipse) {
+    memset(d, 0, sizeof *d);
+    snprintf(d->path, sizeof d->path, "%s", path);
+    d->ellipse = ellipse;
+    d->mtime = modification_time(path);
+    int channels;
+    d->pixels = stbi_load(path, &d->width, &d->height, &channels, 4);
+    if (!d->pixels) {
         fprintf(stderr, "driftpaper: cannot load image '%s': %s\n", path, stbi_failure_reason());
         return -1;
     }
+    analyze_image(d->pixels, d->width, d->height, ellipse, &d->analysis);
+    return 0;
+}
+
+void image_decoded_free(struct decoded_image *d) {
+    stbi_image_free(d->pixels);
+    d->pixels = NULL;
+}
+
+static int upload_image(struct image *img, struct decoded_image *d) {
     GLint max_size;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
-    if (w > max_size || h > max_size) {
-        fprintf(stderr, "driftpaper: image %dx%d exceeds the GPU texture limit of %d px\n", w, h, max_size);
-        stbi_image_free(pixels);
+    if (d->width > max_size || d->height > max_size) {
+        fprintf(stderr, "driftpaper: image %dx%d exceeds the GPU texture limit of %d px\n", d->width, d->height, max_size);
+        image_decoded_free(d);
         return -1;
     }
 
@@ -468,15 +482,16 @@ static int load_image(struct image *img, const char *path, float ellipse) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    analyze_image(pixels, w, h, ellipse, &img->analysis);
-    stbi_image_free(pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d->width, d->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, d->pixels);
+    image_decoded_free(d);
 
-    snprintf(img->path, sizeof img->path, "%s", path);
-    img->mtime = modification_time(path);
-    img->ellipse = ellipse;
-    img->width = w;
-    img->height = h;
+    snprintf(img->path, sizeof img->path, "%s", d->path);
+    img->mtime = d->mtime;
+    img->ellipse = d->ellipse;
+    img->width = d->width;
+    img->height = d->height;
+    img->analysis = d->analysis;
+    img->refs = 1;
     return 0;
 }
 
@@ -485,23 +500,50 @@ static int same_image(const struct image *img, const char *path, float ellipse, 
            img->mtime.tv_sec == mtime.tv_sec && img->mtime.tv_nsec == mtime.tv_nsec;
 }
 
-static struct image *acquire_image(struct renderer *r, const char *path, float ellipse) {
+static struct image *find_image(struct renderer *r, const char *path, float ellipse) {
     struct timespec mtime = modification_time(path);
-    struct image *free_slot = NULL;
-    for (int i = 0; i < MAX_IMAGES; i++) {
-        struct image *img = &r->images[i];
-        if (same_image(img, path, ellipse, mtime)) {
-            img->refs++;
-            return img;
-        }
-        if (!img->refs && !free_slot) free_slot = img;
-    }
-    if (!free_slot || load_image(free_slot, path, ellipse)) return NULL;
-    free_slot->refs = 1;
-    return free_slot;
+    for (int i = 0; i < MAX_IMAGES; i++)
+        if (same_image(&r->images[i], path, ellipse, mtime)) return &r->images[i];
+    return NULL;
 }
 
-static void release_image(struct image *img) {
+static struct image *free_image_slot(struct renderer *r) {
+    for (int i = 0; i < MAX_IMAGES; i++)
+        if (!r->images[i].refs) return &r->images[i];
+    return NULL;
+}
+
+int renderer_has_image(struct renderer *r, const char *path, float ellipse) {
+    return find_image(r, path, ellipse) != NULL;
+}
+
+struct image *renderer_add_image(struct renderer *r, struct decoded_image *d) {
+    struct image *img = find_image(r, d->path, d->ellipse);
+    if (img) {
+        image_decoded_free(d);
+        img->refs++;
+        return img;
+    }
+    img = free_image_slot(r);
+    if (!img) {
+        image_decoded_free(d);
+        return NULL;
+    }
+    return upload_image(img, d) ? NULL : img;
+}
+
+static struct image *acquire_image(struct renderer *r, const char *path, float ellipse) {
+    struct image *img = find_image(r, path, ellipse);
+    if (img) {
+        img->refs++;
+        return img;
+    }
+    struct decoded_image d;
+    if (!free_image_slot(r) || image_decode(&d, path, ellipse)) return NULL;
+    return renderer_add_image(r, &d);
+}
+
+void renderer_release_image(struct image *img) {
     if (--img->refs > 0) return;
     glDeleteTextures(1, &img->texture);
     img->texture = 0;
@@ -610,7 +652,7 @@ int scene_create(struct renderer *r, struct scene *s, const char *image_path, co
 
 void scene_destroy(struct scene *s) {
     if (s->particle_vbo) glDeleteBuffers(1, &s->particle_vbo);
-    if (s->image) release_image(s->image);
+    if (s->image) renderer_release_image(s->image);
     memset(s, 0, sizeof *s);
 }
 
